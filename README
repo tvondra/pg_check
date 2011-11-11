@@ -2,11 +2,18 @@
 INSTALL
 -------
 
-1. copy the directory to "contrib/" directory of the PostgreSQL (9.0) tree
+This is a regular extension (9.1) or a contrib module (9.0), so it may be
+installed rather easily - do either this
 
-2. modify the "contrib/Makefile" - add the "pg_check" to SUBDIRS
+  $ make install
+  $ psql dbname -c "CREATE EXTENSION pg_check"
 
-3. build/install just as the other contrib modules
+or this (on 9.0)
+
+  $ make install
+  $ psql dbname < `pg_config --sharedir`/contrib/pg_check--0.1.0.sql
+
+and the extension should be installed.
 
 
 FUNCTIONS

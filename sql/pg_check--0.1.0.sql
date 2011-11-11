@@ -7,12 +7,12 @@ SET search_path = public;
 
 CREATE OR REPLACE FUNCTION pg_check_table(regclass, bool)
 RETURNS int4
-AS 'MODULE_PATHNAME', 'pg_check_table'
+AS '$libdir/pg_check', 'pg_check_table'
 LANGUAGE C STRICT;
 
 CREATE OR REPLACE FUNCTION pg_check_table(regclass, bigint, bigint)
 RETURNS int4
-AS 'MODULE_PATHNAME', 'pg_check_table_pages'
+AS '$libdir/pg_check', 'pg_check_table_pages'
 LANGUAGE C STRICT;
 
 --
@@ -21,10 +21,10 @@ LANGUAGE C STRICT;
 
 CREATE OR REPLACE FUNCTION pg_check_index(regclass)
 RETURNS int4
-AS 'MODULE_PATHNAME', 'pg_check_index'
+AS '$libdir/pg_check', 'pg_check_index'
 LANGUAGE C STRICT;
 
 CREATE OR REPLACE FUNCTION pg_check_index(regclass, bigint, bigint)
 RETURNS int4
-AS 'MODULE_PATHNAME', 'pg_check_index_pages'
+AS '$libdir/pg_check', 'pg_check_index_pages'
 LANGUAGE C STRICT;

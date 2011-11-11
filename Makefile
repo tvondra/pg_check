@@ -1,22 +1,14 @@
-#-------------------------------------------------------------------------
-#
-# pg_check Makefile
-#
-#-------------------------------------------------------------------------
+MODULE_big = pg_check
+OBJS = src/pg_check.o src/common.o src/heap.o src/index.o
 
-MODULE_big	= pg_check
-OBJS		= pg_check.o index.o heap.o common.o
-DATA_built	= pg_check.sql
-DATA      	= uninstall_pg_check.sql
+EXTENSION = pg_check
+DATA = sql/pg_check--0.1.0.sql
+MODULES = pg_check
 
-ifdef USE_PGXS
+CFLAGS=`pg_config --includedir-server`
+
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
-else
-subdir = contrib/pg_check
-top_builddir = ../..
-include $(top_builddir)/src/Makefile.global
-include $(top_srcdir)/contrib/contrib-global.mk
-endif
 
+pg_check.so: $(OBJS)

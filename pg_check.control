@@ -1,0 +1,4 @@
+# pg_check
+comment = 'Provides basic integrity checks for data files.'
+default_version = '0.1.0'
+relocatable = true
