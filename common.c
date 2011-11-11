@@ -24,7 +24,9 @@ uint32 check_page_header(PageHeader header, int block) {
 	
 	/* check the page size (should be BLCKSZ) */
 	if (PageGetPageSize(header) != BLCKSZ) {
-		ereport(WARNING,(errmsg("[%d] invalid page size %d (%d)", block, PageGetPageSize(header), BLCKSZ)));
+		ereport(WARNING,
+				(errmsg("[%d] invalid page size %d (%d)", block,
+						(int) PageGetPageSize(header), BLCKSZ)));
 		++nerrs;
 	}
 	
@@ -40,17 +42,26 @@ uint32 check_page_header(PageHeader header, int block) {
 
 	/* all the pointers should be positive (greater than PageHeaderData) and less than BLCKSZ */
 	if ((header->pd_lower < offsetof(PageHeaderData, pd_linp)) ||  (header->pd_lower > BLCKSZ)) {
-		ereport(WARNING,(errmsg("[%d] lower %d not between %d and %d", block, header->pd_lower, offsetof(PageHeaderData, pd_linp), BLCKSZ)));
+		ereport(WARNING,
+				(errmsg("[%d] lower %d not between %d and %d", block,
+						header->pd_lower,
+						(int) offsetof(PageHeaderData, pd_linp), BLCKSZ)));
 		++nerrs;
 	}
 	
 	if ((header->pd_upper < offsetof(PageHeaderData, pd_linp)) ||  (header->pd_upper > BLCKSZ)) {
-		ereport(WARNING,(errmsg("[%d] upper %d not between %d and %d", block, header->pd_upper, offsetof(PageHeaderData, pd_linp), BLCKSZ)));
+		ereport(WARNING,
+				(errmsg("[%d] upper %d not between %d and %d", block,
+						header->pd_upper,
+						(int) offsetof(PageHeaderData, pd_linp), BLCKSZ)));
 		++nerrs;
 	}
 	
 	if ((header->pd_special < offsetof(PageHeaderData, pd_linp)) ||  (header->pd_special > BLCKSZ)) {
-		ereport(WARNING,(errmsg("[%d] special %d not between %d and %d", block, header->pd_special, offsetof(PageHeaderData, pd_linp), BLCKSZ)));
+		ereport(WARNING,
+				(errmsg("[%d] special %d not between %d and %d", block,
+						header->pd_special,
+						(int) offsetof(PageHeaderData, pd_linp), BLCKSZ)));
 		++nerrs;
 	}
 	

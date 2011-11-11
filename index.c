@@ -53,7 +53,11 @@ uint32 check_index_page(Relation rel, PageHeader header, char *buffer, int block
 	
 		/* check there's enough space for index-relevant data */
 		if (header->pd_special > BLCKSZ - sizeof(BTPageOpaque)) {
-			ereport(WARNING,(errmsg("[%d] there's not enough special space for index data (%d > %d)", block, sizeof(BTPageOpaque), BLCKSZ - header->pd_special)));
+			ereport(WARNING,
+					(errmsg("[%d] there's not enough special space for index data (%d > %d)",
+							block,
+							(int) sizeof(BTPageOpaque),
+							BLCKSZ - header->pd_special)));
 			nerrs++;
 		}
 		
