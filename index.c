@@ -63,15 +63,32 @@ uint32 check_index_page(Relation rel, PageHeader header, char *buffer, int block
 			nerrs++;
 		}
 		
-		/* if the page is leaf-page, then level needs to be 0 (if it's a non-leaf page, then > 0) */
-		if ((opaque->btpo_flags & BTP_LEAF) && (opaque-> btpo.level != 0)) {
-			ereport(WARNING,(errmsg("[%d] is leaf page, but level is %d != 0", block, opaque->btpo.level)));
-			nerrs++;
-		} else if ((!(opaque->btpo_flags & BTP_LEAF)) && (opaque-> btpo.level == 0)) {
-			ereport(WARNING,(errmsg(" page %d is leaf page, but level is %d != 0", block, opaque->btpo.level)));
-			nerrs++;
+		/*
+		 * if the page is a leaf page, then level needs to be 0. Otherwise,
+		 * it should be > 0. Deleted pages don't have a level, the level
+		 * field is interleaved with an xid.
+		 */
+		if (!P_ISDELETED(opaque))
+		{
+			if (P_ISLEAF(opaque))
+			{
+				if (opaque-> btpo.level != 0) {
+					ereport(WARNING,
+							(errmsg("[%d] is leaf page, but level %d is not zero",
+									block, opaque->btpo.level)));
+					nerrs++;
+				}
+			}
+			else
+			{
+				if (opaque-> btpo.level == 0) {
+					ereport(WARNING,
+							(errmsg("[%d] is a non-leaf page, but level is zero",
+									block)));
+					nerrs++;
+				}
+			}
 		}
-		
 	}
 	
 	return nerrs;
