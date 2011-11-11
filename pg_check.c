@@ -11,17 +11,19 @@
 
 #include "postgres.h"
 
+#include "access/itup.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_class.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
 
 #include "common.h"
 #include "index.h"
 #include "heap.h"
-#include "access/itup.h"
-#include "utils/lsyscache.h"
 
 PG_MODULE_MAGIC;
 

@@ -6,6 +6,8 @@
 #include "access/itup.h"
 #include "access/nbtree.h"
 #include "funcapi.h"
+#include "utils/rel.h"
+
 #include "heap.h"
 
 #define BlockNum(tuple) \
@@ -166,7 +168,8 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 	/* current attribute offset - always starts at (buffer + off) */
 	off = header->pd_linp[i].lp_off + IndexInfoFindDataOffset(tuple->t_info);
 	
-	ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes", block, (i+1), rel->rd_att->natts)));
+	ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes", block, (i+1),
+						   RelationGetNumberOfAttributes(rel))));
 	
 	bitmap = (bits8*)(buffer + header->pd_linp[i].lp_off + sizeof(IndexTupleData));
 	
