@@ -139,6 +139,7 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 		ereport(WARNING,(errmsg("[%d:%d] tuple has %d attributes, not %d as expected", block, (i+1), HeapTupleHeaderGetNatts(tupheader), rel->rd_att->natts)));
 		++nerrs;
 	} else {
+		int	endoff;
 	  
 		ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes", block, (i+1), rel->rd_att->natts)));
 	  
@@ -201,8 +202,14 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 			/* Check if the length makes sense (is not negative and does not overflow
 			 * the tuple end, stop validating the other rows (we don't know where to
 			 * continue anyway). */
-			if (off + len > (header->pd_linp[i].lp_off + header->pd_linp[i].lp_len)) {
-				ereport(WARNING, (errmsg("[%d:%d] attribute '%s' (off=%d len=%d) overflows tuple end (off=%d, len=%d)", block, (i+1), rel->rd_att->attrs[j]->attname.data, off, len, header->pd_linp[i].lp_off, header->pd_linp[i].lp_len)));
+			endoff = header->pd_linp[i].lp_off + header->pd_linp[i].lp_len;
+			if (off + len > endoff) {
+				ereport(WARNING,
+						(errmsg("[%d:%d] attribute '%s' (off=%d len=%d) overflows tuple end (off=%d, len=%d)",
+								block, (i+1),
+								rel->rd_att->attrs[j]->attname.data, off, len,
+								header->pd_linp[i].lp_off,
+								header->pd_linp[i].lp_len)));
 				++nerrs;
 				break;
 			}
@@ -216,9 +223,16 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 	
 		ereport(DEBUG3,(errmsg("[%d:%d] last attribute ends at %d, tuple ends at %d", block, (i+1), off, header->pd_linp[i].lp_off + header->pd_linp[i].lp_len)));
 		
-		/* after the last attribute, the offset should be exactly the same as the end of the tuple */
-		if (MAXALIGN(off) != header->pd_linp[i].lp_off + header->pd_linp[i].lp_len) {
-			ereport(WARNING, (errmsg("[%d:%d] the last attribute ends at %d but the tuple ends at %d", block, (i+1), off, header->pd_linp[i].lp_off + header->pd_linp[i].lp_len)));
+		/*
+		 * The end of last attribute should fall within the length given in
+		 * the line pointer.
+		 */
+		endoff = header->pd_linp[i].lp_off + header->pd_linp[i].lp_len;
+		if (off > endoff) {
+			ereport(WARNING,
+					(errmsg("[%d:%d] the last attribute ends at %d but the tuple ends at %d",
+							block, (i+1), off,
+							endoff)));
 			++nerrs;
 		}
 		
