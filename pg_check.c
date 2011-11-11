@@ -136,9 +136,6 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
 
 /*
  * check the table, acquires AccessShareLock
- *
- * FIXME Should have more thorough checks regarding block range / checkIndexes.
- *
  */
 static uint32
 check_table(Oid relid, bool checkIndexes,
