@@ -139,13 +139,9 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 	/* attribute offset - always starts at (buffer + off) */
 	off = header->pd_linp[i].lp_off + tupheader->t_hoff;
 
-	/* XXX: This check is bogus. A heap tuple can have fewer attributes
-	 * than specified in the relation, if new columns have been added with
-	 * ALTER TABLE
-	 */
-	if (HeapTupleHeaderGetNatts(tupheader) != rel->rd_att->natts) {
+	if (HeapTupleHeaderGetNatts(tupheader) > rel->rd_att->natts) {
 		ereport(WARNING,
-				(errmsg("[%d:%d] tuple has %d attributes, not %d as expected",
+				(errmsg("[%d:%d] tuple has too many attributes. %d found, %d expected",
 						block, (i+1),
 						HeapTupleHeaderGetNatts(tupheader),
 						RelationGetNumberOfAttributes(rel))));
