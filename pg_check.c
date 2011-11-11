@@ -211,10 +211,7 @@ check_table(Oid relid, bool checkIndexes,
 		list_of_indexes = RelationGetIndexList(rel);
 		
 		foreach(index, list_of_indexes) {
-			Oid index_oid = lfirst_oid(index);
-			char *index_name = get_rel_name(index_oid);
-			elog(NOTICE, "checking index: %s", index_name);
-			nerrs += check_index_oid(index_oid);
+			nerrs += check_index_oid(lfirst_oid(index));
 		}
 
 		list_free(list_of_indexes);
@@ -261,6 +258,15 @@ check_index_oid(Oid	indexOid)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("object \"%s\" is not an index",
 						RelationGetRelationName(rel))));
+
+	/* We only know how to check b-tree indexes, so ignore anything else */
+	if (rel->rd_rel->relam != BTREE_AM_OID)
+	{
+		relation_close(rel, AccessShareLock);
+		return 0;
+	}
+
+	elog(NOTICE, "checking index: %s", RelationGetRelationName(rel));
 
 	/* Initialize buffer to copy to */
 	raw_page = (char *) palloc(BLCKSZ);
