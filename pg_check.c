@@ -33,9 +33,9 @@ Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
 Datum		pg_check_index(PG_FUNCTION_ARGS);
 Datum		pg_check_index_pages(PG_FUNCTION_ARGS);
 
-static uint32	check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo);
+static uint32	check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
 
-static uint32	check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo);
+static uint32	check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
 
 static uint32	check_index_oid(Oid	indexOid);
 
@@ -53,7 +53,7 @@ pg_check_table(PG_FUNCTION_ARGS)
 	bool	checkIndexes = PG_GETARG_BOOL(1);
     uint32      nerrs;
 
-	nerrs = check_table(relid, checkIndexes, 0, -1);
+	nerrs = check_table(relid, checkIndexes, 0, 0, false);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -69,11 +69,21 @@ Datum
 pg_check_table_pages(PG_FUNCTION_ARGS)
 {
 	Oid		relid	 = PG_GETARG_OID(0);
-	uint32	blkfrom  = PG_GETARG_UINT32(1);
-    uint32	blkto    = PG_GETARG_UINT32(2);
+	int64	blkfrom  = PG_GETARG_INT64(1);
+    int64	blkto    = PG_GETARG_INT64(2);
     uint32	nerrs;
 
-	nerrs = check_table(relid, false, blkfrom, blkto);
+	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
+		ereport(ERROR,
+				(errmsg("invalid starting block number")));
+
+	if (blkto < 0 || blkto > MaxBlockNumber)
+		ereport(ERROR,
+				(errmsg("invalid ending block number")));
+
+	nerrs = check_table(relid, false,
+						(BlockNumber) blkfrom, (BlockNumber) blkto,
+						true);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -91,7 +101,7 @@ pg_check_index(PG_FUNCTION_ARGS)
 	Oid		relid = PG_GETARG_OID(0);
     uint32	nerrs;
 
-	nerrs = check_index(relid, 0, -1);
+	nerrs = check_index(relid, 0, 0, false);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -107,11 +117,19 @@ Datum
 pg_check_index_pages(PG_FUNCTION_ARGS)
 {
 	Oid		relid	 = PG_GETARG_OID(0);
-	uint32	blkfrom  = PG_GETARG_UINT32(1);
-    uint32	blkto    = PG_GETARG_UINT32(2);
+	int64	blkfrom  = PG_GETARG_INT64(1);
+    int64	blkto    = PG_GETARG_INT64(2);
     uint32	nerrs;
 
-	nerrs = check_index(relid, blkfrom, blkto);
+	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
+		ereport(ERROR,
+				(errmsg("invalid starting block number")));
+
+	if (blkto < 0 || blkto > MaxBlockNumber)
+		ereport(ERROR,
+				(errmsg("invalid ending block number")));
+
+	nerrs = check_index(relid, (BlockNumber) blkfrom, (BlockNumber) blkto, true);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -123,7 +141,8 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
  *
  */
 static uint32
-check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo)
+check_table(Oid relid, bool checkIndexes,
+			BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven)
 {
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
@@ -138,19 +157,15 @@ check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blo
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pg_check functions"))));
-				 
-	if (blockFrom < 0)
-		ereport(ERROR,
-				(errmsg("invalid starting block number %d", blockFrom)));
-				
-	if ((checkIndexes) && ((blockFrom != 0) || (blockTo != -1)))
-		ereport(ERROR,
-				(errmsg("invalid combination of checkIndexes, block range")));
-	
+
+	if (blockRangeGiven && checkIndexes) /* shouldn't happen */
+		elog(ERROR, "invalid combination of checkIndexes and a block range");
+
 	/* FIXME is this lock mode sufficient? */
 	rel = relation_open(relid, AccessShareLock);
 
 	/* Check that this relation has storage */
+	/* XXX: what about toast tables ? */
 	if (rel->rd_rel->relkind != RELKIND_RELATION)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -160,12 +175,14 @@ check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blo
 	/* Initialize buffer to copy to */
 	raw_page = (char *) palloc(BLCKSZ);
 	
-	if (blockTo == -1) {
-		blockTo = RelationGetNumberOfBlocks(rel) - 1;
+	if (!blockRangeGiven)
+	{
+		blockFrom = 0;
+		blockTo = RelationGetNumberOfBlocks(rel);
 	}
 		
 	/* Take a verbatim copies of the pages and check them */
-	for (blkno = blockFrom; blkno <= blockTo; blkno++) {
+	for (blkno = blockFrom; blkno < blockTo; blkno++) {
 	
 		/* FIXME Does this use the small circular buffer just like sequential
 		 * scan? If not, then it should, otherwise the cache might be polluted
@@ -187,7 +204,6 @@ check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blo
 		
 		/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
 		nerrs += check_heap_tuples(rel, header, raw_page, blkno);
-		
 	}
 	
 	/* check indexes */
@@ -294,7 +310,8 @@ check_index_oid(Oid	indexOid)
  * check the index, acquires AccessShareLock
  */
 static uint32
-check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo)
+check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
+			bool blockRangeGiven)
 {
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
@@ -307,10 +324,6 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pg_check functions"))));
-	
-	if (blockFrom < 0)
-		ereport(ERROR,
-				(errmsg("invalid starting block number %d", blockFrom)));
 
 	/* FIXME A more strict lock might be more appropriate. */
 	rel = relation_open(indexOid, AccessShareLock);
@@ -327,11 +340,12 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo)
 	raw_page = (char *) palloc(BLCKSZ);
 	
 	/* Take a verbatim copies of the pages and check them */
-	if (blockTo == -1) {
-		blockTo = RelationGetNumberOfBlocks(rel) - 1;
+	if (!blockRangeGiven) {
+		blockFrom = 0;
+		blockTo = RelationGetNumberOfBlocks(rel);
 	}
 	
-	for (blkno = blockFrom; blkno <= blockTo; blkno++) {
+	for (blkno = blockFrom; blkno < blockTo; blkno++) {
 	
 		/* FIXME Does this use the small circular buffer just like sequential
 		 * scan? If not, then it should, otherwise the cache might be polluted

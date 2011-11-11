@@ -10,7 +10,7 @@ RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_table'
 LANGUAGE C STRICT;
 
-CREATE OR REPLACE FUNCTION pg_check_table(regclass, int, int)
+CREATE OR REPLACE FUNCTION pg_check_table(regclass, bigint, bigint)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_table_pages'
 LANGUAGE C STRICT;
@@ -24,7 +24,7 @@ RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_index'
 LANGUAGE C STRICT;
 
-CREATE OR REPLACE FUNCTION pg_check_index(regclass, int, int)
+CREATE OR REPLACE FUNCTION pg_check_index(regclass, bigint, bigint)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_index_pages'
 LANGUAGE C STRICT;
