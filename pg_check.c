@@ -164,8 +164,8 @@ check_table(Oid relid, bool checkIndexes,
 	rel = relation_open(relid, AccessShareLock);
 
 	/* Check that this relation has storage */
-	/* XXX: what about toast tables ? */
-	if (rel->rd_rel->relkind != RELKIND_RELATION)
+	if (rel->rd_rel->relkind != RELKIND_RELATION &&
+		rel->rd_rel->relkind != RELKIND_TOASTVALUE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("object \"%s\" is not a table",
