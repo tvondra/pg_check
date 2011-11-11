@@ -151,7 +151,6 @@ check_table(Oid relid, bool checkIndexes,
 	BlockNumber blkno;     /* current block */
 	PageHeader 	header;    /* page header */
 	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
-	List		*list_of_indexes = NULL;	//list of indexes
 	
 	if (!superuser())
 		ereport(ERROR,
@@ -183,7 +182,7 @@ check_table(Oid relid, bool checkIndexes,
 
 	strategy = GetAccessStrategy(BAS_BULKREAD);
 		
-	/* Take a verbatim copies of the pages and check them */
+	/* Take a verbatim copy of each page, and check them */
 	for (blkno = blockFrom; blkno < blockTo; blkno++)
 	{
 		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
@@ -206,24 +205,19 @@ check_table(Oid relid, bool checkIndexes,
 	
 	/* check indexes */
 	if (checkIndexes) {
-	  
-		list_of_indexes = RelationGetIndexList(rel);
-		if (list_of_indexes != NULL) {
-			ListCell	*index;
+		List	   *list_of_indexes;
+		ListCell   *index;
 
-			char * index_name;
-			Oid index_oid;
+		list_of_indexes = RelationGetIndexList(rel);
 		
-			foreach(index, list_of_indexes) {
-				index_oid=lfirst_oid(index);
-				index_name = (char *) get_rel_name(index_oid);
-				elog(NOTICE, "checking index: %s", index_name);
-				nerrs += check_index_oid(index_oid);
-			}
+		foreach(index, list_of_indexes) {
+			Oid index_oid = lfirst_oid(index);
+			char *index_name = get_rel_name(index_oid);
+			elog(NOTICE, "checking index: %s", index_name);
+			nerrs += check_index_oid(index_oid);
 		}
-		
+
 		list_free(list_of_indexes);
-		
 	}
 
 	FreeAccessStrategy(strategy);
