@@ -43,3 +43,9 @@ the client_min_messages level.
    DEBUG1  - info about pages
    DEBUG2  - info about tuples on a page
    DEBUG3  - info about attributes of a tuple
+
+
+LICENSE
+-------
+
+This software is provided under the BDS license. See LICENSE for details.
