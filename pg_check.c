@@ -150,7 +150,7 @@ check_table(Oid relid, bool checkIndexes,
     uint32      nerrs = 0; /* number of errors found */
 	BlockNumber blkno;     /* current block */
 	PageHeader 	header;    /* page header */
-	
+	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
 	List		*list_of_indexes = NULL;	//list of indexes
 	
 	if (!superuser())
@@ -180,15 +180,13 @@ check_table(Oid relid, bool checkIndexes,
 		blockFrom = 0;
 		blockTo = RelationGetNumberOfBlocks(rel);
 	}
+
+	strategy = GetAccessStrategy(BAS_BULKREAD);
 		
 	/* Take a verbatim copies of the pages and check them */
-	for (blkno = blockFrom; blkno < blockTo; blkno++) {
-	
-		/* FIXME Does this use the small circular buffer just like sequential
-		 * scan? If not, then it should, otherwise the cache might be polluted
-		 * when checking large tables. */
-		
-		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, NULL);
+	for (blkno = blockFrom; blkno < blockTo; blkno++)
+	{
+		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
 		memcpy(raw_page, BufferGetPage(buf), BLCKSZ);
@@ -228,6 +226,8 @@ check_table(Oid relid, bool checkIndexes,
 		
 	}
 
+	FreeAccessStrategy(strategy);
+
 	relation_close(rel, AccessShareLock);
 
 	return nerrs;
@@ -251,7 +251,8 @@ check_index_oid(Oid	indexOid)
 	BlockNumber blkno;     /* current block */
 	BlockNumber maxblock;  /* number of blocks of a table */
 	PageHeader 	header;    /* page header */
-
+	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
+	
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -269,16 +270,14 @@ check_index_oid(Oid	indexOid)
 
 	/* Initialize buffer to copy to */
 	raw_page = (char *) palloc(BLCKSZ);
-	
+
+	strategy = GetAccessStrategy(BAS_BULKREAD);
+
 	/* Take a verbatim copies of the pages and check them */
 	maxblock = RelationGetNumberOfBlocks(rel);
-	for (blkno = 0; blkno < maxblock; blkno++) {
-	
-		/* FIXME Does this use the small circular buffer just like sequential
-		 * scan? If not, then it should, otherwise the cache might be polluted
-		 * when checking large tables. */
-		
-		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, NULL);
+	for (blkno = 0; blkno < maxblock; blkno++)
+	{
+		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
 		memcpy(raw_page, BufferGetPage(buf), BLCKSZ);
@@ -301,6 +300,8 @@ check_index_oid(Oid	indexOid)
 		
 	}
 
+	FreeAccessStrategy(strategy);
+
 	relation_close(rel, AccessShareLock);
 
 	return nerrs;
@@ -319,6 +320,7 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
     uint32      nerrs = 0; /* number of errors found */
 	BlockNumber blkno;     /* current block */
 	PageHeader 	header;    /* page header */
+	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
 
 	if (!superuser())
 		ereport(ERROR,
@@ -344,14 +346,12 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 		blockFrom = 0;
 		blockTo = RelationGetNumberOfBlocks(rel);
 	}
-	
-	for (blkno = blockFrom; blkno < blockTo; blkno++) {
-	
-		/* FIXME Does this use the small circular buffer just like sequential
-		 * scan? If not, then it should, otherwise the cache might be polluted
-		 * when checking large tables. */
-		
-		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, NULL);
+
+	strategy = GetAccessStrategy(BAS_BULKREAD);
+
+	for (blkno = blockFrom; blkno < blockTo; blkno++)
+	{
+		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
 		memcpy(raw_page, BufferGetPage(buf), BLCKSZ);
@@ -373,6 +373,8 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 		}
 		
 	}
+
+	FreeAccessStrategy(strategy);
 
 	relation_close(rel, AccessShareLock);
 
