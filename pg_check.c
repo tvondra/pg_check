@@ -31,9 +31,9 @@ Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
 Datum		pg_check_index(PG_FUNCTION_ARGS);
 Datum		pg_check_index_pages(PG_FUNCTION_ARGS);
 
-static uint32	check_table(text *relname, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo);
+static uint32	check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo);
 
-static uint32	check_index(text *relname, BlockNumber blockFrom, BlockNumber blockTo);
+static uint32	check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo);
 
 static uint32	check_index_oid(Oid	indexOid);
 
@@ -47,11 +47,11 @@ PG_FUNCTION_INFO_V1(pg_check_table);
 Datum
 pg_check_table(PG_FUNCTION_ARGS)
 {
-	text	*relname = PG_GETARG_TEXT_P(0);
+	Oid		relid	 = PG_GETARG_OID(0);
 	bool	checkIndexes = PG_GETARG_BOOL(1);
     uint32      nerrs;
 
-	nerrs = check_table(relname, checkIndexes, 0, -1);
+	nerrs = check_table(relid, checkIndexes, 0, -1);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -66,12 +66,12 @@ PG_FUNCTION_INFO_V1(pg_check_table_pages);
 Datum
 pg_check_table_pages(PG_FUNCTION_ARGS)
 {
-	text	*relname = PG_GETARG_TEXT_P(0);
+	Oid		relid	 = PG_GETARG_OID(0);
 	uint32	blkfrom  = PG_GETARG_UINT32(1);
     uint32	blkto    = PG_GETARG_UINT32(2);
     uint32	nerrs;
 
-	nerrs = check_table(relname, false, blkfrom, blkto);
+	nerrs = check_table(relid, false, blkfrom, blkto);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -86,10 +86,10 @@ PG_FUNCTION_INFO_V1(pg_check_index);
 Datum
 pg_check_index(PG_FUNCTION_ARGS)
 {
-	text	*relname = PG_GETARG_TEXT_P(0);
+	Oid		relid = PG_GETARG_OID(0);
     uint32	nerrs;
 
-	nerrs = check_index(relname, 0, -1);
+	nerrs = check_index(relid, 0, -1);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -104,12 +104,12 @@ PG_FUNCTION_INFO_V1(pg_check_index_pages);
 Datum
 pg_check_index_pages(PG_FUNCTION_ARGS)
 {
-	text	*relname = PG_GETARG_TEXT_P(0);
+	Oid		relid	 = PG_GETARG_OID(0);
 	uint32	blkfrom  = PG_GETARG_UINT32(1);
     uint32	blkto    = PG_GETARG_UINT32(2);
     uint32	nerrs;
 
-	nerrs = check_index(relname, blkfrom, blkto);
+	nerrs = check_index(relid, blkfrom, blkto);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -121,9 +121,8 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
  *
  */
 static uint32
-check_table(text *relname, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo)
+check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo)
 {
-	RangeVar   *relrv;     /* used to search the relation by name */
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
 	Buffer		buf;       /* buffer the page is read into */
@@ -146,10 +145,8 @@ check_table(text *relname, bool checkIndexes, BlockNumber blockFrom, BlockNumber
 		ereport(ERROR,
 				(errmsg("invalid combination of checkIndexes, block range")));
 	
-	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
-	
 	/* FIXME is this lock mode sufficient? */
-	rel = relation_openrv(relrv, AccessShareLock);
+	rel = relation_open(relid, AccessShareLock);
 
 	/* Check that this relation has storage */
 	if (rel->rd_rel->relkind != RELKIND_RELATION)
@@ -295,9 +292,8 @@ check_index_oid(Oid	indexOid)
  * check the index, acquires AccessShareLock
  */
 static uint32
-check_index(text *relname, BlockNumber blockFrom, BlockNumber blockTo)
+check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo)
 {
-	RangeVar   *relrv;     /* used to search the relation by name */
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
 	Buffer		buf;       /* buffer the page is read into */
@@ -314,10 +310,8 @@ check_index(text *relname, BlockNumber blockFrom, BlockNumber blockTo)
 		ereport(ERROR,
 				(errmsg("invalid starting block number %d", blockFrom)));
 
-	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
-	
 	/* FIXME A more strict lock might be more appropriate. */
-	rel = relation_openrv(relrv, AccessShareLock);
+	rel = relation_open(indexOid, AccessShareLock);
 
 	/* Check that this relation is a b-tree index */
 	if ((rel->rd_rel->relkind != RELKIND_INDEX) || (rel->rd_rel->relam != BTREE_AM_OID)) {

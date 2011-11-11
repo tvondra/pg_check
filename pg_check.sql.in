@@ -5,12 +5,12 @@ SET search_path = public;
 -- pg_check_table()
 --
 
-CREATE OR REPLACE FUNCTION pg_check_table(text, bool)
+CREATE OR REPLACE FUNCTION pg_check_table(regclass, bool)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_table'
 LANGUAGE C STRICT;
 
-CREATE OR REPLACE FUNCTION pg_check_table(text, int, int)
+CREATE OR REPLACE FUNCTION pg_check_table(regclass, int, int)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_table_pages'
 LANGUAGE C STRICT;
@@ -19,12 +19,12 @@ LANGUAGE C STRICT;
 -- pg_check_index()
 --
 
-CREATE OR REPLACE FUNCTION pg_check_index(text)
+CREATE OR REPLACE FUNCTION pg_check_index(regclass)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_index'
 LANGUAGE C STRICT;
 
-CREATE OR REPLACE FUNCTION pg_check_index(text, int, int)
+CREATE OR REPLACE FUNCTION pg_check_index(regclass, int, int)
 RETURNS int4
 AS 'MODULE_PATHNAME', 'pg_check_index_pages'
 LANGUAGE C STRICT;

@@ -3,7 +3,7 @@
 -- Adjust this setting to control where the objects get dropped.
 SET search_path = public;
 
-DROP FUNCTION pg_check_table(text, bool);
-DROP FUNCTION pg_check_table(text, int, int);
-DROP FUNCTION pg_check_index(text);
-DROP FUNCTION pg_check_index(text, int, int);
+DROP FUNCTION pg_check_table(regclass, bool);
+DROP FUNCTION pg_check_table(regclass, int, int);
+DROP FUNCTION pg_check_index(regclass);
+DROP FUNCTION pg_check_index(regclass, int, int);
