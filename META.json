@@ -15,6 +15,7 @@
    "provides": {
      "pg_check": {
        "file": "sql/pg_check--0.1.0.sql",
+       "docfile" : "README.md",
        "version": "0.1.0"
      },
    },
