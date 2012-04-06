@@ -5,12 +5,12 @@ SET search_path = public;
 -- pg_check_table()
 --
 
-CREATE OR REPLACE FUNCTION pg_check_table(table_relation regclass, check_indexes bool)
+CREATE OR REPLACE FUNCTION pg_check_table(table_relation regclass, check_indexes bool, cross_check bool)
 RETURNS int4
 AS '$libdir/pg_check', 'pg_check_table'
 LANGUAGE C STRICT;
 
-COMMENT ON FUNCTION pg_check_table(regclass, bool) IS 'checks consistency of the whole table (and optionally all indexes on it)';
+COMMENT ON FUNCTION pg_check_table(regclass, bool, bool) IS 'checks consistency of the whole table (and optionally all indexes on it)';
 
 CREATE OR REPLACE FUNCTION pg_check_table(table_relation regclass, block_start bigint, block_end bigint)
 RETURNS int4

@@ -12,6 +12,7 @@
 #include "postgres.h"
 
 #include "access/itup.h"
+#include "access/nbtree.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
 #include "funcapi.h"
@@ -24,6 +25,9 @@
 #include "common.h"
 #include "index.h"
 #include "heap.h"
+#include "item-bitmap.h"
+
+#define BTPageGetOpaque(page) ((BTPageOpaque) PageGetSpecialPointer(page))
 
 PG_MODULE_MAGIC;
 
@@ -33,11 +37,11 @@ Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
 Datum		pg_check_index(PG_FUNCTION_ARGS);
 Datum		pg_check_index_pages(PG_FUNCTION_ARGS);
 
-static uint32	check_table(Oid relid, bool checkIndexes, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
+static uint32	check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
 
 static uint32	check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
 
-static uint32	check_index_oid(Oid	indexOid);
+static uint32	check_index_oid(Oid	indexOid, item_bitmap * bitmap);
 
 /*
  * pg_check_table
@@ -51,9 +55,10 @@ pg_check_table(PG_FUNCTION_ARGS)
 {
 	Oid		relid	 = PG_GETARG_OID(0);
 	bool	checkIndexes = PG_GETARG_BOOL(1);
+	bool	crossCheckIndexes = PG_GETARG_BOOL(2);
     uint32      nerrs;
 
-	nerrs = check_table(relid, checkIndexes, 0, 0, false);
+	nerrs = check_table(relid, checkIndexes, crossCheckIndexes, 0, 0, false);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -81,7 +86,7 @@ pg_check_table_pages(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errmsg("invalid ending block number")));
 
-	nerrs = check_table(relid, false,
+	nerrs = check_table(relid, false, false,
 						(BlockNumber) blkfrom, (BlockNumber) blkto,
 						true);
 
@@ -138,16 +143,20 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
  * check the table, acquires AccessShareLock
  */
 static uint32
-check_table(Oid relid, bool checkIndexes,
+check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 			BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven)
 {
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
 	Buffer		buf;       /* buffer the page is read into */
-    uint32      nerrs = 0; /* number of errors found */
+	uint32		nerrs = 0; /* number of errors found */
 	BlockNumber blkno;     /* current block */
 	PageHeader 	header;    /* page header */
 	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
+	
+	/* used to cross-check heap and indexes */
+	bool		bitmap_build = false;	/* true only when block range not given */
+	item_bitmap *bitmap_heap = NULL;	/* bitmap data */
 	
 	if (!superuser())
 		ereport(ERROR,
@@ -175,6 +184,13 @@ check_table(Oid relid, bool checkIndexes,
 	{
 		blockFrom = 0;
 		blockTo = RelationGetNumberOfBlocks(rel);
+		
+		/* build the bitmap only when we need to cross-check */
+		if (crossCheckIndexes) {
+			/* FIXME this needs exclusive lock on the relation (and indexes) */
+			bitmap_build = true;
+			bitmap_heap  = bitmap_alloc(blockTo);
+		}
 	}
 
 	strategy = GetAccessStrategy(BAS_BULKREAD);
@@ -198,20 +214,58 @@ check_table(Oid relid, bool checkIndexes,
 		
 		/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
 		nerrs += check_heap_tuples(rel, header, raw_page, blkno);
+
+		/* update the bitmap with items from this page (but only when needed) */
+		if (bitmap_build) {
+			bitmap_add_heap_items(bitmap_heap, header, raw_page, blkno);
+		}
+        
 	}
 	
 	/* check indexes */
 	if (checkIndexes) {
 		List	   *list_of_indexes;
 		ListCell   *index;
+		
+		item_bitmap * bitmap_idx = NULL;
+		
+		if (bitmap_build) {
+			bitmap_idx = bitmap_prealloc(bitmap_heap);
+		}
 
 		list_of_indexes = RelationGetIndexList(rel);
 		
 		foreach(index, list_of_indexes) {
-			nerrs += check_index_oid(lfirst_oid(index));
+			
+			/* reset the bitmap (if needed) */
+			if (bitmap_build) {
+				bitmap_reset(bitmap_idx);
+			}
+			
+			nerrs += check_index_oid(lfirst_oid(index), bitmap_idx);
+			
+			/* evaluate the bitmap difference (if needed) */
+			if (bitmap_build) {
+				/* compare the bitmaps */
+				int n = bitmap_compare(bitmap_heap, bitmap_idx);
+				if (n != 0) {
+					elog(WARNING, "there are %d differences between the table and the index", n);
+				}
+				nerrs += n;
+			}
+			
+		}
+		
+		if (bitmap_build) {
+			bitmap_free(bitmap_idx);
 		}
 
 		list_free(list_of_indexes);
+	}
+
+	/* release the the heap bitmap */
+	if (bitmap_build) {
+		bitmap_free(bitmap_heap);
 	}
 
 	FreeAccessStrategy(strategy);
@@ -230,7 +284,7 @@ check_table(Oid relid, bool checkIndexes,
  * only a part of the index.
  */
 static uint32
-check_index_oid(Oid	indexOid)
+check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 {
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
@@ -292,6 +346,12 @@ check_index_oid(Oid	indexOid)
 		
 			/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
 			nerrs += check_index_tuples(rel, header, raw_page, blkno);
+			
+			/* if this is a leaf page (containing actual pointers to the heap),
+			   then update the bitmap */
+			if ((bitmap != NULL) && P_ISLEAF(BTPageGetOpaque(raw_page))) {
+				nerrs += bitmap_add_index_items(bitmap, header, raw_page, blkno);
+			}
 			
 		}
 		

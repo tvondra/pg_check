@@ -1,5 +1,5 @@
 MODULE_big = pg_check
-OBJS = src/pg_check.o src/common.o src/heap.o src/index.o
+OBJS = src/pg_check.o src/common.o src/heap.o src/index.o src/item-bitmap.o
 
 EXTENSION = pg_check
 DATA = sql/pg_check--0.1.0.sql

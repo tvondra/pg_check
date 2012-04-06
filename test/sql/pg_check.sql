@@ -11,8 +11,8 @@ INSERT INTO test_table SELECT NULL FROM generate_series(1,10000) s(i);
 
 CREATE INDEX test_table_index ON test_table (id);
 
-SELECT pg_check_table('test_table', false);
-SELECT pg_check_table('test_table', true);
+SELECT pg_check_table('test_table', false, false);
+SELECT pg_check_table('test_table', true, true);
 
 DROP TABLE test_table;
 
@@ -23,8 +23,8 @@ CREATE TABLE test_table (
 
 INSERT INTO test_table SELECT i FROM generate_series(1,10000) s(i);
 
-SELECT pg_check_table('test_table', false);
-SELECT pg_check_table('test_table', true);
+SELECT pg_check_table('test_table', false, false);
+SELECT pg_check_table('test_table', true, true);
 
 DROP TABLE test_table;
 
@@ -41,8 +41,8 @@ CREATE INDEX test_table_a_index ON test_table (val_a);
 CREATE INDEX test_table_b_index ON test_table (val_b);
 CREATE INDEX test_table_ab_index ON test_table (val_a, val_b);
 
-SELECT pg_check_table('test_table', false);
-SELECT pg_check_table('test_table', true);
+SELECT pg_check_table('test_table', false, false);
+SELECT pg_check_table('test_table', true, true);
 
 DROP TABLE test_table;
 
@@ -59,8 +59,8 @@ CREATE INDEX test_table_a_index ON test_table (val_a);
 CREATE INDEX test_table_b_index ON test_table (val_b);
 CREATE INDEX test_table_ab_index ON test_table (val_a, val_b);
 
-SELECT pg_check_table('test_table', false);
-SELECT pg_check_table('test_table', true);
+SELECT pg_check_table('test_table', false, false);
+SELECT pg_check_table('test_table', true, true);
 
 DROP TABLE test_table;
 
@@ -77,8 +77,8 @@ CREATE INDEX test_table_a_index ON test_table (val_a);
 CREATE INDEX test_table_b_index ON test_table (val_b);
 CREATE INDEX test_table_ab_index ON test_table (val_a, val_b);
 
-SELECT pg_check_table('test_table', false);
-SELECT pg_check_table('test_table', true);
+SELECT pg_check_table('test_table', false, false);
+SELECT pg_check_table('test_table', true, true);
 
 DROP TABLE test_table;
 
