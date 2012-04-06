@@ -56,7 +56,7 @@ pg_check_table(PG_FUNCTION_ARGS)
 	Oid		relid	 = PG_GETARG_OID(0);
 	bool	checkIndexes = PG_GETARG_BOOL(1);
 	bool	crossCheckIndexes = PG_GETARG_BOOL(2);
-    uint32      nerrs;
+	uint32	nerrs;
 
 	nerrs = check_table(relid, checkIndexes, crossCheckIndexes, 0, 0, false);
 
@@ -75,8 +75,8 @@ pg_check_table_pages(PG_FUNCTION_ARGS)
 {
 	Oid		relid	 = PG_GETARG_OID(0);
 	int64	blkfrom  = PG_GETARG_INT64(1);
-    int64	blkto    = PG_GETARG_INT64(2);
-    uint32	nerrs;
+	int64	blkto    = PG_GETARG_INT64(2);
+	uint32	nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
 		ereport(ERROR,
@@ -104,7 +104,7 @@ Datum
 pg_check_index(PG_FUNCTION_ARGS)
 {
 	Oid		relid = PG_GETARG_OID(0);
-    uint32	nerrs;
+	uint32	nerrs;
 
 	nerrs = check_index(relid, 0, 0, false);
 
@@ -123,8 +123,8 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
 {
 	Oid		relid	 = PG_GETARG_OID(0);
 	int64	blkfrom  = PG_GETARG_INT64(1);
-    int64	blkto    = PG_GETARG_INT64(2);
-    uint32	nerrs;
+	int64	blkto    = PG_GETARG_INT64(2);
+	uint32	nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
 		ereport(ERROR,
@@ -189,7 +189,7 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		if (crossCheckIndexes) {
 			/* FIXME this needs exclusive lock on the relation (and indexes) */
 			bitmap_build = true;
-			bitmap_heap  = bitmap_alloc(blockTo);
+			bitmap_heap  = bitmap_init(blockTo);
 		}
 	}
 
@@ -219,7 +219,7 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		if (bitmap_build) {
 			bitmap_add_heap_items(bitmap_heap, header, raw_page, blkno);
 		}
-        
+		
 	}
 	
 	/* check indexes */
@@ -230,9 +230,9 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		item_bitmap * bitmap_idx = NULL;
 		
 		if (bitmap_build) {
-			bitmap_idx = bitmap_prealloc(bitmap_heap);
+			bitmap_idx = bitmap_copy(bitmap_heap);
 		}
-
+		
 		list_of_indexes = RelationGetIndexList(rel);
 		
 		foreach(index, list_of_indexes) {
@@ -246,12 +246,14 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 			
 			/* evaluate the bitmap difference (if needed) */
 			if (bitmap_build) {
+				
 				/* compare the bitmaps */
-				int n = bitmap_compare(bitmap_heap, bitmap_idx);
-				if (n != 0) {
-					elog(WARNING, "there are %d differences between the table and the index", n);
+				int ndiffs = bitmap_compare(bitmap_heap, bitmap_idx);
+				if (ndiffs != 0) {
+					elog(WARNING, "there are %d differences between the table and the index", ndiffs);
 				}
-				nerrs += n;
+				nerrs += ndiffs;
+				
 			}
 			
 		}
@@ -289,7 +291,7 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
 	Buffer		buf;       /* buffer the page is read into */
-    uint32      nerrs = 0; /* number of errors found */
+	uint32      nerrs = 0; /* number of errors found */
 	BlockNumber blkno;     /* current block */
 	BlockNumber maxblock;  /* number of blocks of a table */
 	PageHeader 	header;    /* page header */
@@ -309,7 +311,7 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("object \"%s\" is not an index",
 						RelationGetRelationName(rel))));
-
+	
 	/* We only know how to check b-tree indexes, so ignore anything else */
 	if (rel->rd_rel->relam != BTREE_AM_OID)
 	{
@@ -374,7 +376,7 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 	Relation	rel;       /* relation for the 'relname' */
 	char	   *raw_page;  /* raw data of the page */
 	Buffer		buf;       /* buffer the page is read into */
-    uint32      nerrs = 0; /* number of errors found */
+	uint32      nerrs = 0; /* number of errors found */
 	BlockNumber blkno;     /* current block */
 	PageHeader 	header;    /* page header */
 	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
@@ -423,7 +425,7 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 		nerrs += check_index_page(rel, header, raw_page, blkno);
 		
 		if (blkno > 0) {
-		  
+			
 			/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
 			nerrs += check_index_tuples(rel, header, raw_page, blkno);
 			

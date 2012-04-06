@@ -1,32 +1,43 @@
 #include "item-bitmap.h"
 
 #include <unistd.h>
+#include <assert.h>
 
 #include "access/itup.h"
 
 /* allocate the memory in 1kB chunks */
 #define PALLOC_CHUNK 1024
 
-/* allocate the bitmap (~4.5MB for each 1GB of heap) */
-item_bitmap * bitmap_alloc(int npages) {
+/* init the bitmap (allocate, set default values) */
+item_bitmap * bitmap_init(int npages) {
 	
-	item_bitmap * bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
+	item_bitmap * bitmap;
+
+	/* sanity check */
+	assert(npages >= 0);
+	
+	bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
 	
 	bitmap->npages = npages;
 	bitmap->pages = (int*)palloc(sizeof(int)*npages);
 	
 	bitmap->nbytes = 0;
-	bitmap->maxBytes = PALLOC_CHUNK;
-	bitmap->data = (char*)palloc(PALLOC_CHUNK);
+	bitmap->maxBytes = PALLOC_CHUNK * (npages / PALLOC_CHUNK / 8 + 1);
+	bitmap->data = (char*)palloc(bitmap->maxBytes);
 	
 	return bitmap;
 	
 }
 
-/* allocate the bitmap (~4.5MB for each 1GB of heap) */
-item_bitmap * bitmap_prealloc(item_bitmap * src) {
+/* copy the bitmap (except the actual bitmap data, keep zeroes) */
+item_bitmap * bitmap_copy(item_bitmap * src) {
 	
-	item_bitmap * bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
+	item_bitmap * bitmap;
+	
+	/* sanity check */
+	assert(src != NULL);
+	
+	bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
 	
 	bitmap->npages = src->npages;
 	
@@ -43,11 +54,16 @@ item_bitmap * bitmap_prealloc(item_bitmap * src) {
 	
 }
 
+/* reset the bitmap data (not the page counts etc.) */
 void bitmap_reset(item_bitmap* bitmap) {
 	memset(bitmap->data, 0, bitmap->maxBytes);
 }
 
+/* free the allocated resources */
 void bitmap_free(item_bitmap* bitmap) {
+	
+	assert(bitmap != NULL);
+	
 	pfree(bitmap->pages);
 	pfree(bitmap->data);
 	pfree(bitmap);
@@ -57,9 +73,15 @@ void bitmap_free(item_bitmap* bitmap) {
 /* extends the bitmap to handle another page */
 void bitmap_add_page(item_bitmap * bitmap, int page, int items) {
 
+	/* sanity checks */
+	assert(page >= 0);
+	assert(page < bitmap->npages);
+	assert(items >= 0);
+	assert(items <= MaxHeapTuplesPerPage);
+
 	bitmap->pages[page] = (page == 0) ? items : (items + bitmap->pages[page-1]);
 	
-	/* if needed more bytes than */
+	/* if needed more bytes than already allocated, extend the bitmap */
 	bitmap->nbytes = ((bitmap->pages[page] + 7) / 8);
 	if (bitmap->nbytes > bitmap->maxBytes) {
 		bitmap->maxBytes += PALLOC_CHUNK;
@@ -98,6 +120,8 @@ int bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header, char *raw_pag
 				do {
 					next = header->pd_linp[next].lp_off;
 					if (! bitmap_set_item(bitmap, page, next, false)) {
+						/* FIXME this is incorrect, IMHO - the chain might be longer and the items may be
+						 * processed out of order */
 						nerrs++;
 					}
 				} while (header->pd_linp[next].lp_flags != LP_REDIRECT);
@@ -152,6 +176,8 @@ bool bitmap_set_item(item_bitmap * bitmap, int page, int item, bool state) {
 		return false;
 	}
 
+	/* FIXME check whether the item is aleady set or not (and return false if it is) */
+	
 	if (state) {
 		/* set the bit (OR) */
 		bitmap->data[byteIdx] |= (1 << bitIdx);
@@ -240,22 +266,40 @@ long bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b) {
 	
 }
 
-/* print the bitmap (for debugging purposes) */
+/* Prints the info about the bitmap and the data as a series of 0/1. */
 /* TODO print details about differences (items missing in heap, items missing in index) */
 void bitmap_print(item_bitmap * bitmap) {
-
+	
 	int i, j, k = 0;
-	char str[bitmap->nbytes*8+1];
+	char page[5];
+	char data[bitmap->nbytes*8+1];
+	char * pages;
+	
+	pages = (char*)palloc(bitmap->npages*4+1);
+	
+	for (i = 0; i < bitmap->npages; i++) {
+		if (i == 0) {
+			sprintf(page, "%d", bitmap->pages[i]);
+		} else {
+			sprintf(page, ",%d", bitmap->pages[i]);
+		}
+		pages = strcat(pages, page);
+	}
+	pages[bitmap->npages*2] = '0';
 	
 	for (i = 0; i < bitmap->nbytes; i++) {
 		for (j = 0; j < 8; j++) {
 			if (bitmap->data[i] & (1 << j)) {
-				str[k++] = '1';
+				data[k++] = '1';
 			} else {
-				str[k++] = '0';
+				data[k++] = '0';
 			}
 		}
 	}
-	str[k++] = 0;
-	elog(WARNING, "bitmap [%s]", str);
+	data[k++] = 0;
+	
+	elog(WARNING, "bitmap nbytes=%d npages=%d pages=[%s] data=[%s]", bitmap->nbytes,
+		 bitmap->npages, pages, data);
+	
+	pfree(pages);
 }
