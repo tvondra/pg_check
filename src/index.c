@@ -104,7 +104,11 @@ uint32 check_index_tuples(Relation rel, PageHeader header, char *buffer, int blo
   
 	ereport(DEBUG1, (errmsg("[%d] max number of tuples = %d", block, ntuples)));
 	
+	/* FIXME check btpo_flags (BTP_LEAF, BTP_ROOT, BTP_DELETED, BTP_META, BTP_HALF_DEAD,
+	 *       BTP_SPLIT_END and BTP_HAS_GARBAGE) and act accordingly */
+	
 	for (i = 0; i < ntuples; i++) {
+		/* FIXME this should check lp_flags, just as the heap check */
 		nerrs += check_index_tuple(rel, header, block, i, buffer);
 	}
 	
