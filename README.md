@@ -14,9 +14,9 @@ check if there are any missing / superfluous items in the index
 (compared to the heap).
 
 This extension **does not** implement correcting any of the issues,
-nor it does not fully check the index structure (except for the generic
-page checks mentioned above). The extension does not support index
-types other than b-tree.
+nor it fully checks the index structure (except for the generic page
+checks mentioned above). The extension does not support index types
+other than b-tree (yet).
 
 
 Installation
@@ -72,4 +72,4 @@ the client_min_messages level.
 License
 -------
 
-This software is provided under the BDS license. See LICENSE for details.
+This software is provided under the BSD license. See LICENSE for details.
