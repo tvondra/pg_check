@@ -13,9 +13,14 @@ Moreover it's possible to cross-check the table and indexes, i.e. to
 check if there are any missing / superfluous items in the index
 (compared to the heap).
 
+This extension **does not** implement correcting any of the issues,
+nor it does not fully check the index structure (except for the generic
+page checks mentioned above). The extension does not support index
+types other than b-tree.
 
-INSTALL
--------
+
+Installation
+------------
 
 This is a regular extension (9.1) or a contrib module (9.0), so it may be
 installed rather easily - do either this
@@ -31,7 +36,7 @@ or this (on 9.0)
 and the extension should be installed.
 
 
-FUNCTIONS
+Functions
 ---------
 
 Currently there are four functions available
@@ -52,7 +57,7 @@ So if you want to check table "my_table" and all the indexes on it, do this:
 and it will print out info about the checks (and return number of issues).
 
 
-MESSAGES
+Messages
 --------
 
 The functions may print various info about the blocks/tuples, depending on
@@ -64,7 +69,7 @@ the client_min_messages level.
 * `DEBUG3` - info about attributes of a tuple
 
 
-LICENSE
+License
 -------
 
 This software is provided under the BDS license. See LICENSE for details.
