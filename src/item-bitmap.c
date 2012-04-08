@@ -114,20 +114,17 @@ int bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header, char *raw_pag
 	}
 	
 	/* second pass - remove the HOT chains */
+	/* FIXME this seems not to work (the checks fail after update) */
 	for (item = 0; item < ntuples; item++) {
 	
 		if (header->pd_linp[item].lp_flags == LP_REDIRECT) {
 			/* walk only if not walked this HOT chain yet (skip the first item in the chain) */
-			if (bitmap_get_item(bitmap, page, item)) {
-				int next = item;
-				do {
-					next = header->pd_linp[next].lp_off;
-					if (! bitmap_set_item(bitmap, page, next, false)) {
-						/* FIXME this is incorrect, IMHO - the chain might be longer and the items may be
-						 * processed out of order */
-						nerrs++;
-					}
-				} while (header->pd_linp[next].lp_flags != LP_REDIRECT);
+			if (bitmap_get_item(bitmap, page, header->pd_linp[item].lp_off-1)) {
+				if (! bitmap_set_item(bitmap, page, header->pd_linp[item].lp_off-1, false)) {
+					/* FIXME this is incorrect, IMHO - the chain might be longer and the items may be
+					 * processed out of order */
+					nerrs++;
+				}
 			}
 		}
 		
