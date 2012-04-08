@@ -9,6 +9,15 @@
 
 #define MAX(a,b) ((a > b) ? a : b)
 
+/* bitmap format */
+typedef enum
+{
+        BITMAP_BASE64,
+        BITMAP_HEX,
+        BITMAP_BINARY,
+        BITMAP_NONE
+}       BitmapFormat;
+
 /* bitmap, used to cross-check heap and indexes */
 typedef struct item_bitmap {
 	
@@ -138,6 +147,6 @@ long bitmap_count(item_bitmap * bitmap);
 long bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b);
 
 /* Prints the info about the bitmap and the data as a series of 0/1. */
-void bitmap_print(item_bitmap * bitmap);
+void bitmap_print(item_bitmap * bitmap, BitmapFormat format);
 
 #endif   /* HEAP_CHECK_H */

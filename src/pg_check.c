@@ -21,15 +21,32 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/guc.h"
 
 #include "common.h"
 #include "index.h"
 #include "heap.h"
 #include "item-bitmap.h"
 
+#ifdef PG_MODULE_MAGIC
+PG_MODULE_MAGIC;
+#endif
+
 #define BTPageGetOpaque(page) ((BTPageOpaque) PageGetSpecialPointer(page))
 
-PG_MODULE_MAGIC;
+/* bitmap format (when pg_check.debug = true) */
+static const struct config_enum_entry bitmap_options[] = {
+        {"base64", BITMAP_BASE64, false},
+        {"hex", BITMAP_HEX, false},
+        {"binary", BITMAP_BINARY, false},
+        {"none", BITMAP_NONE, false},
+        {NULL, 0, false}
+};
+
+void        _PG_init(void);
+
+bool	pgcheck_debug;
+int		pgcheck_bitmap_format = BITMAP_BINARY;
 
 Datum		pg_check_table(PG_FUNCTION_ARGS);
 Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
@@ -222,6 +239,10 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		
 	}
 	
+	if (pgcheck_debug) {
+		bitmap_print(bitmap_heap, pgcheck_bitmap_format);
+	}
+	
 	/* check indexes */
 	if (checkIndexes) {
 		List	   *list_of_indexes;
@@ -249,6 +270,11 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 				
 				/* compare the bitmaps */
 				int ndiffs = bitmap_compare(bitmap_heap, bitmap_idx);
+				
+				if (pgcheck_debug) {
+					bitmap_print(bitmap_idx, pgcheck_bitmap_format);
+				}
+				
 				if (ndiffs != 0) {
 					elog(WARNING, "there are %d differences between the table and the index", ndiffs);
 				}
@@ -438,4 +464,43 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 	relation_close(rel, AccessShareLock);
 
 	return nerrs;
+}
+
+/*
+ * Module load callback
+ */
+void
+_PG_init(void)
+{
+    
+    /* Define custom GUC variables. */
+    DefineCustomBoolVariable("pg_check.debug",
+                              "print debugging info.",
+                             NULL,
+                             &pgcheck_debug,
+                             false,
+                             PGC_SUSET,
+                             0,
+#if (PG_VERSION_NUM >= 90100)
+                             NULL,
+#endif
+                             NULL,
+                             NULL);
+
+    DefineCustomEnumVariable("pg_check.bitmap_format",
+                             "how to print bitmap when debugging",
+                             NULL,
+                             &pgcheck_bitmap_format,
+                             BITMAP_BINARY,
+                             bitmap_options,
+                             PGC_SUSET,
+                             0,
+#if (PG_VERSION_NUM >= 90100)
+                             NULL,
+#endif
+                             NULL,
+                             NULL);
+
+    EmitWarningsOnPlaceholders("pg_check");
+
 }

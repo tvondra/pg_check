@@ -11,8 +11,11 @@
  */
 #define PALLOC_CHUNK 1024
 
-int count_digits(int values[], int n);
-char * itoa(int value, char * str, int maxlen);
+static int count_digits(int values[], int n);
+static char * itoa(int value, char * str, int maxlen);
+static char * hex(const char * data, int n);
+static char * binary(const char * data, int n);
+static char * base64(const char * data, int n);
 
 /* init the bitmap (allocate, set default values) */
 item_bitmap * bitmap_init(int npages) {
@@ -277,13 +280,13 @@ long bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b) {
 
 /* Prints the info about the bitmap and the data as a series of 0/1. */
 /* TODO print details about differences (items missing in heap, items missing in index) */
-void bitmap_print(item_bitmap * bitmap) {
+void bitmap_print(item_bitmap * bitmap, BitmapFormat format) {
 	
-	int i, j, bits = 0, k = 0;
-	char data[bitmap->nbytes*8+1];
+	int i = 0;
 	int len = count_digits(bitmap->pages, bitmap->npages) + bitmap->npages;
 	char pages[len];
 	char *ptr = pages;
+	char *data = NULL;
 	
 	ptr[0] = '\0';
 	for (i = 0; i < bitmap->npages; i++) {
@@ -292,21 +295,22 @@ void bitmap_print(item_bitmap * bitmap) {
 	}
 	*(--ptr) = '\0';
 	
-	for (i = 0; i < bitmap->nbytes; i++) {
-		for (j = 0; j < 8; j++) {
-			if (bitmap->data[i] & (1 << j)) {
-				data[k++] = '1';
-			} else {
-				data[k++] = '0';
-			}
-		}
+	/* encode as binary or hex */
+	if (format == BITMAP_BINARY) {
+		data = binary(bitmap->data, bitmap->nbytes);
+	} else if (format == BITMAP_BASE64) {
+		data = base64(bitmap->data, bitmap->nbytes);
+	} else if (format == BITMAP_HEX) {
+		data = hex(bitmap->data, bitmap->nbytes);
+	} else if (format == BITMAP_NONE) {
+		data = palloc(1);
+		data[0] = '\0';
 	}
-	data[k] = '\0';
 	
-	bits = bitmap_count(bitmap);
+	elog(WARNING, "bitmap nbytes=%d nbits=%ld npages=%d pages=[%s] data=[%s]",
+		 bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages, data);
 	
-	elog(WARNING, "bitmap nbytes=%d nbits=%d npages=%d pages=[%s] data=[%s]",
-		 bitmap->nbytes, bits, bitmap->npages, pages, data);
+	pfree(data);
 	
 }
 
@@ -322,4 +326,82 @@ int count_digits(int values[], int n) {
 /* utility to fill an integer value in a given value */
 char * itoa(int value, char * str, int maxlen) {
 	return str + snprintf(str, maxlen, "%d", value);
+}
+
+/* encode data to hex */
+static 
+char * hex(const char * data, int n) {
+	
+	int i, w = 0;
+	static const char hex[] = "0123456789abcdef";
+	char * result = palloc(n*2+1);
+	
+	for (i = 0; i < n; i++) {
+		result[w++] = hex[(data[i] >> 4) & 0x0F];
+		result[w++] = hex[data[i] & 0x0F];
+	}
+	
+	result[w] = '\0';
+	
+	return result;
+	
+}
+
+static char * binary(const char * data, int n) {
+
+	int i, j, k = 0;
+	char *result = palloc(n*8+10);
+	
+	for (i = 0; i < n; i++) {
+		for (j = 0; j < 8; j++) {
+			if (data[i] & (1 << j)) {
+				result[k++] = '1';
+			} else {
+				result[k++] = '0';
+			}
+		}
+	}
+	result[k] = '\0';
+	
+	return result;
+	
+}
+
+/* encode data to base64 */
+static char * base64(const char * data, int n) {
+	
+	int i, k = 0;
+	static const char	_base64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	char 			   *result = palloc(4*((n+2)/3) + 1);
+	uint32				buf = 0;
+	int					pos = 2;
+	
+	for (i = 0; i < n; i++) {
+		
+		buf |= data[i] << (pos << 3);
+		pos--;
+		
+		if (pos < 0) {
+			
+			result[k++] = _base64[(buf >> 18) & 0x3f];
+			result[k++] = _base64[(buf >> 12) & 0x3f];
+			result[k++] = _base64[(buf >> 6) & 0x3f];
+			result[k++] = _base64[buf & 0x3f];
+			
+			pos = 2;
+			buf = 0;
+			
+		}
+	}
+	
+	if (pos != 2) {
+		result[k++] = _base64[(buf >> 18) & 0x3f];
+		result[k++] = _base64[(buf >> 12) & 0x3f];
+		result[k++] = (pos == 0) ? _base64[(buf >> 6) & 0x3f] : '\0';
+	}
+	
+	result[k] = '\0';
+	
+	return result;
+	
 }
