@@ -8,6 +8,9 @@
 /* allocate the memory in 1kB chunks */
 #define PALLOC_CHUNK 1024
 
+int count_digits(int values[], int n);
+char * itoa(int value, char * str, int maxlen);
+
 /* init the bitmap (allocate, set default values) */
 item_bitmap * bitmap_init(int npages) {
 	
@@ -270,22 +273,17 @@ long bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b) {
 /* TODO print details about differences (items missing in heap, items missing in index) */
 void bitmap_print(item_bitmap * bitmap) {
 	
-	int i, j, k = 0;
-	char page[5];
+	int i, j, bits = 0, k = 0;
 	char data[bitmap->nbytes*8+1];
-	char * pages;
-	
-	pages = (char*)palloc(bitmap->npages*4+1);
+	int len = count_digits(bitmap->pages, bitmap->npages) + bitmap->npages;
+	char pages[len];
+	char *ptr = pages;
 	
 	for (i = 0; i < bitmap->npages; i++) {
-		if (i == 0) {
-			sprintf(page, "%d", bitmap->pages[i]);
-		} else {
-			sprintf(page, ",%d", bitmap->pages[i]);
-		}
-		pages = strcat(pages, page);
+		ptr = itoa(bitmap->pages[i], ptr, len - (ptr - pages));
+		*(ptr++) = ',';
 	}
-	pages[bitmap->npages*2] = '0';
+	*(--ptr) = '\0';
 	
 	for (i = 0; i < bitmap->nbytes; i++) {
 		for (j = 0; j < 8; j++) {
@@ -296,10 +294,25 @@ void bitmap_print(item_bitmap * bitmap) {
 			}
 		}
 	}
-	data[k++] = 0;
+	data[k] = '\0';
 	
-	elog(WARNING, "bitmap nbytes=%d npages=%d pages=[%s] data=[%s]", bitmap->nbytes,
-		 bitmap->npages, pages, data);
+	bits = bitmap_count(bitmap);
 	
-	pfree(pages);
+	elog(WARNING, "bitmap nbytes=%d nbits=%d npages=%d pages=[%s] data=[%s]",
+		 bitmap->nbytes, bits, bitmap->npages, pages, data);
+	
+}
+
+/* count digits to print the array (in ASCII) */
+int count_digits(int values[], int n) {
+	int i, digits = 0;
+	for (i = 0; i < n; i++) {
+		digits += (int)ceil(log(values[i]) / log(10));
+	}
+	return digits;
+}
+
+/* utility to fill an integer value in a given value */
+char * itoa(int value, char * str, int maxlen) {
+	return str + snprintf(str, maxlen, "%d", value);
 }
