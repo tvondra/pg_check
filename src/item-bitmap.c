@@ -5,7 +5,10 @@
 
 #include "access/itup.h"
 
-/* allocate the memory in 1kB chunks */
+/* allocate the memory in 1kB chunks - this needs to be large enough
+ * to hold items for one page (8k ~ 290 bits, ie 32k ~ 1200 bits, so
+ * this needs to be at least 150B)
+ */
 #define PALLOC_CHUNK 1024
 
 int count_digits(int values[], int n);
@@ -21,12 +24,16 @@ item_bitmap * bitmap_init(int npages) {
 	
 	bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
 	
+	memset(bitmap, 0, sizeof(item_bitmap));
+	
 	bitmap->npages = npages;
 	bitmap->pages = (int*)palloc(sizeof(int)*npages);
 	
 	bitmap->nbytes = 0;
 	bitmap->maxBytes = PALLOC_CHUNK * (npages / PALLOC_CHUNK / 8 + 1);
 	bitmap->data = (char*)palloc(bitmap->maxBytes);
+	
+	memset(bitmap->data, 0, bitmap->maxBytes);
 	
 	return bitmap;
 	
@@ -87,8 +94,10 @@ void bitmap_add_page(item_bitmap * bitmap, int page, int items) {
 	/* if needed more bytes than already allocated, extend the bitmap */
 	bitmap->nbytes = ((bitmap->pages[page] + 7) / 8);
 	if (bitmap->nbytes > bitmap->maxBytes) {
+		int len = bitmap->maxBytes; /* keep so that we can zero the new chunk */
 		bitmap->maxBytes += PALLOC_CHUNK;
 		bitmap->data = (char*)repalloc(bitmap->data, bitmap->maxBytes);
+		memset(bitmap->data + len, 0, PALLOC_CHUNK);
 	}
 
 }
