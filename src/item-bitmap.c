@@ -307,8 +307,13 @@ void bitmap_print(item_bitmap * bitmap, BitmapFormat format) {
 		data[0] = '\0';
 	}
 	
-	elog(WARNING, "bitmap nbytes=%d nbits=%ld npages=%d pages=[%s] data=[%s]",
-		 bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages, data);
+	if (format == BITMAP_NONE) {
+		elog(WARNING, "bitmap nbytes=%d nbits=%ld npages=%d pages=[%s]",
+			bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages);
+	} else {
+		elog(WARNING, "bitmap nbytes=%d nbits=%ld npages=%d pages=[%s] data=[%s]",
+			bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages, data);
+	}
 	
 	pfree(data);
 	
