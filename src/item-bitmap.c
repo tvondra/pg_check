@@ -276,6 +276,7 @@ void bitmap_print(item_bitmap * bitmap) {
 	char pages[len];
 	char *ptr = pages;
 	
+	ptr[0] = '\0';
 	for (i = 0; i < bitmap->npages; i++) {
 		ptr = itoa(bitmap->pages[i], ptr, len - (ptr - pages));
 		*(ptr++) = ',';
