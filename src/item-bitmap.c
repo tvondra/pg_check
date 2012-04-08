@@ -118,7 +118,7 @@ int bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header, char *raw_pag
 	/* by default set all LP_REDIRECT / LP_NORMAL items to '1' (we'll remove the HOT chains in the second pass) */
 	/* FIXME what if there is a HOT chain and then an index is created? */
 	for (item = 0; item < ntuples; item++) {
-		if ((header->pd_linp[item].lp_flags == LP_NORMAL) || (header->pd_linp[item].lp_flags == LP_REDIRECT)) {
+		if (ItemIdIsUsed(&header->pd_linp[item])) {
 			if (! bitmap_set_item(bitmap, page, item, true)) {
 				nerrs++;
 			}
@@ -126,13 +126,15 @@ int bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header, char *raw_pag
 	}
 	
 	/* second pass - remove the HOT chains */
-	/* FIXME this seems not to work (the checks fail after update) */
 	for (item = 0; item < ntuples; item++) {
-	
-		if (header->pd_linp[item].lp_flags == LP_REDIRECT) {
+		
+		Page p = (Page)raw_page;
+		HeapTupleHeader htup = (HeapTupleHeader) PageGetItem(p, &header->pd_linp[item]);
+		
+		if (HeapTupleHeaderIsHeapOnly(htup)) {
 			/* walk only if not walked this HOT chain yet (skip the first item in the chain) */
-			if (bitmap_get_item(bitmap, page, header->pd_linp[item].lp_off-1)) {
-				if (! bitmap_set_item(bitmap, page, header->pd_linp[item].lp_off-1, false)) {
+			if (bitmap_get_item(bitmap, page, item)) {
+				if (! bitmap_set_item(bitmap, page, item, false)) {
 					/* FIXME this is incorrect, IMHO - the chain might be longer and the items may be
 					 * processed out of order */
 					nerrs++;
