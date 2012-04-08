@@ -1,0 +1,31 @@
+BEGIN;
+CREATE EXTENSION pg_check;
+-- no index
+CREATE TABLE test_table (
+    id      INT
+);
+INSERT INTO test_table SELECT i FROM generate_series(1,10000) s(i);
+DELETE FROM test_table WHERE MOD(id, 2) = 0;
+SELECT pg_check_table('test_table', true, true);
+ pg_check_table 
+----------------
+              0
+(1 row)
+
+DROP TABLE test_table;
+-- index
+CREATE TABLE test_table (
+    id      INT PRIMARY KEY
+);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "test_table_pkey" for table "test_table"
+INSERT INTO test_table SELECT i FROM generate_series(1,10000) s(i);
+DELETE FROM test_table WHERE MOD(id, 2) = 0;
+SELECT pg_check_table('test_table', true, true);
+NOTICE:  checking index: test_table_pkey
+ pg_check_table 
+----------------
+              0
+(1 row)
+
+DROP TABLE test_table;
+ROLLBACK;
