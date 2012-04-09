@@ -183,8 +183,12 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 	if (blockRangeGiven && checkIndexes) /* shouldn't happen */
 		elog(ERROR, "invalid combination of checkIndexes and a block range");
 
-	/* FIXME is this lock mode sufficient? */
-	rel = relation_open(relid, AccessShareLock);
+	/* when cross-checking, a more restrictive lock mode is needed */
+	if (crossCheckIndexes) {
+		rel = relation_open(relid, ShareRowExclusiveLock);
+	} else {
+		rel = relation_open(relid, AccessShareLock);
+	}
 
 	/* Check that this relation has storage */
 	if (rel->rd_rel->relkind != RELKIND_RELATION &&
@@ -298,7 +302,11 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 
 	FreeAccessStrategy(strategy);
 
-	relation_close(rel, AccessShareLock);
+	if (crossCheckIndexes) {
+		relation_close(rel, ShareRowExclusiveLock);
+	} else {
+		relation_close(rel, AccessShareLock);
+	}
 
 	return nerrs;
 }
@@ -329,7 +337,11 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 				 (errmsg("must be superuser to use pg_check functions"))));
 	
 	/* FIXME maybe we need more strict lock here */
-	rel = index_open(indexOid, AccessShareLock);
+	if (bitmap != NULL) {
+		rel = index_open(indexOid, ShareRowExclusiveLock);
+	} else {
+		rel = index_open(indexOid, AccessShareLock);
+	}
 
 	/* Check that this relation has storage */
 	if (rel->rd_rel->relkind != RELKIND_INDEX)
@@ -387,7 +399,11 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 
 	FreeAccessStrategy(strategy);
 
-	relation_close(rel, AccessShareLock);
+	if (bitmap != NULL) {
+		relation_close(rel, ShareRowExclusiveLock);
+	} else {
+		relation_close(rel, AccessShareLock);
+	}
 
 	return nerrs;
 }
