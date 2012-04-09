@@ -56,6 +56,16 @@ So if you want to check table "my_table" and all the indexes on it, do this:
 
 and it will print out info about the checks (and return number of issues).
 
+Be very careful about running the `pg_check_table` with `crossCheck=true`
+because that means a more restrictive lock mode (SHARE ROW EXCLUSIVE) is
+needed instead of the ACCESS SHARE lock used with `crossCheck=false`.
+
+So use cross-checking wisely, as it prevents any modification of the data
+(table or indexes). This may even cause deadlocks, if another process
+acquires the locks in different order (index before table). The lock
+on the table is held the whole time, the locks on the indexes are acquired
+only when checking the indexes (so there's always at most one index locked).
+
 
 GUC options
 -----------
