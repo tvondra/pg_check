@@ -57,6 +57,27 @@ So if you want to check table "my_table" and all the indexes on it, do this:
 and it will print out info about the checks (and return number of issues).
 
 
+GUC options
+-----------
+
+The extension (once loaded) uses these two options:
+
+ * `pg_check.debug = {true | false}`
+ * `pg_check.bitmap_format = {binary, base64, hex, none}`
+
+The first one allows you to enable debug output when cross-checking the
+table and indexes - by default it's set to `false` and by setting it to
+true the extension will print details about the bitmaps.
+
+The bimap may be printed in several formats - "binary" (as a sequence of
+0s and 1s), "hex" (hexa-decimal) or "base64" (the usual base64 encoding).
+Or it may be disabled by "none" (thus only basic info about the bitmap
+will be printed). By default the format is "binary".
+
+This is intended for debugging purposes only, the amount of information
+printed may be significant (even megabytes).
+
+
 Messages
 --------
 
