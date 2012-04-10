@@ -136,13 +136,13 @@ uint32 check_index_tuple(Relation rel, PageHeader header, int block, int i, char
 	a = header->pd_linp[i].lp_off;
 	b = header->pd_linp[i].lp_off + header->pd_linp[i].lp_len;
 	
-	ereport(DEBUG2,(errmsg("[%d:%d] checking intersection with other tuples", block, i)));
+	ereport(DEBUG2,(errmsg("[%d:%d] checking intersection with other tuples", block, (i+1))));
 	
 	for (j = 0; j < i; j++) {
 	  
 		/* FIXME Skip UNUSED/REDIRECT/DEAD tuples */
 		if (! (header->pd_linp[i].lp_flags == LP_NORMAL)) {
-			ereport(DEBUG3,(errmsg("[%d:%d] skipped (not LP_NORMAL)", block, j)));
+			ereport(DEBUG3,(errmsg("[%d:%d] skipped (not LP_NORMAL)", block, (j+1))));
 			continue;
 		}
 	  
@@ -159,7 +159,7 @@ uint32 check_index_tuple(Relation rel, PageHeader header, int block, int i, char
 	
 	/* check attributes only for tuples with (lp_flags==LP_NORMAL) */
 	if (header->pd_linp[i].lp_flags == LP_NORMAL) {
-		nerrs += check_index_tuple_attributes(rel, header, block, i, buffer);
+		nerrs += check_index_tuple_attributes(rel, header, block, i + 1, buffer);
 	}
 	
 	return nerrs;
@@ -167,7 +167,7 @@ uint32 check_index_tuple(Relation rel, PageHeader header, int block, int i, char
 }
 
 /* checks the individual attributes of the tuple */
-uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, int i, char *buffer) {
+uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, OffsetNumber offnum, char *buffer) {
   
 	IndexTuple tuple;
 	uint32 nerrs = 0;
@@ -175,20 +175,22 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 	
 	bits8 * bitmap;
 	BTPageOpaque opaque;
-	
-	ereport(DEBUG2,(errmsg("[%d:%d] checking attributes for the tuple", block, i)));
+	ItemId	linp;
+
+	ereport(DEBUG2,(errmsg("[%d:%d] checking attributes for the tuple", block, offnum)));
 	
 	/* get the index tuple and info about the page */
-	tuple = (IndexTuple)(buffer + header->pd_linp[i].lp_off);
+	linp = &header->pd_linp[offnum - 1];
+	tuple = (IndexTuple)(buffer + linp->lp_off);
 	opaque = (BTPageOpaque)(buffer + header->pd_special);
 	
 	/* current attribute offset - always starts at (buffer + off) */
-	off = header->pd_linp[i].lp_off + IndexInfoFindDataOffset(tuple->t_info);
+	off = linp->lp_off + IndexInfoFindDataOffset(tuple->t_info);
 	
-	ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes", block, (i+1),
+	ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes", block, offnum,
 						   RelationGetNumberOfAttributes(rel))));
-	
-	bitmap = (bits8*)(buffer + header->pd_linp[i].lp_off + sizeof(IndexTupleData));
+	/* XXX: MAXALIGN */
+	bitmap = (bits8*)(buffer + linp->lp_off + sizeof(IndexTupleData));
 	
 	/* TODO This is mostly copy'n'paste from check_heap_tuple_attributes,
 	   so maybe it could be refactored to share the code. */
@@ -200,12 +202,12 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 	   Use P_LEFTMOST/P_ISLEAF to identify such cases (for the leftmost item only)
 	   and set len = 0.
 	*/
-	
-	if (P_LEFTMOST(opaque) && (! P_ISLEAF(opaque)) && (i == 0)) {
-		ereport(DEBUG3, (errmsg("[%d:%d] leftmost tuple on non-leaf block => no data, skipping", block, i)));
+
+	if (P_LEFTMOST(opaque) && !P_ISLEAF(opaque) && offnum == P_FIRSTDATAKEY(opaque)) {
+		ereport(DEBUG3, (errmsg("[%d:%d] leftmost tuple on non-leaf block => no data, skipping", block, offnum)));
 		return nerrs;
 	}
-	  
+
 	/* check all the index attributes */
 	for (j = 0; j < rel->rd_att->natts; j++) {
 		
@@ -218,7 +220,7 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 		
 		/* if the attribute is marked as NULL (in the tuple header), skip to the next attribute */
 		if (IndexTupleHasNulls(tuple) && att_isnull(j, bitmap)) {
-			ereport(DEBUG3, (errmsg("[%d:%d] attribute '%s' is NULL (skipping)", block, (i+1), rel->rd_att->attrs[j]->attname.data)));
+			ereport(DEBUG3, (errmsg("[%d:%d] attribute '%s' is NULL (skipping)", block, offnum, rel->rd_att->attrs[j]->attname.data)));
 			continue;
 		}
 
@@ -239,7 +241,7 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 			len = VARSIZE_ANY(buffer + off);
 			
 			if (len < 0) {
-				ereport(WARNING, (errmsg("[%d:%d] attribute '%s' has negative length < 0 (%d)", block, (i+1), rel->rd_att->attrs[j]->attname.data, len)));
+				ereport(WARNING, (errmsg("[%d:%d] attribute '%s' has negative length < 0 (%d)", block, offnum, rel->rd_att->attrs[j]->attname.data, len)));
 				++nerrs;
 				break;
 			}
@@ -247,7 +249,7 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 			if (VARATT_IS_COMPRESSED(buffer + off)) {
 				/* the raw length should be less than 1G (and positive) */
 				if ((VARRAWSIZE_4B_C(buffer + off) < 0) || (VARRAWSIZE_4B_C(buffer + off) > 1024*1024)) {
-					ereport(WARNING, (errmsg("[%d:%d]  attribute '%s' has invalid length %d (should be between 0 and 1G)", block, (i+1), rel->rd_att->attrs[j]->attname.data, VARRAWSIZE_4B_C(buffer + off))));
+					ereport(WARNING, (errmsg("[%d:%d]  attribute '%s' has invalid length %d (should be between 0 and 1G)", block, offnum, rel->rd_att->attrs[j]->attname.data, VARRAWSIZE_4B_C(buffer + off))));
 					++nerrs;
 					/* no break here, this does not break the page structure - we may check the other attributes */
 				}
@@ -259,7 +261,7 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 		
 			/* get the C-string length (at most to the end of tuple), +1 as it does not include '\0' at the end */
 			/* if the string is not properly terminated, then this returns 'remaining space + 1' so it's detected */
-			len = strnlen(buffer + off, header->pd_linp[i].lp_off + len + header->pd_linp[i].lp_len - off) + 1;
+			len = strnlen(buffer + off, linp->lp_off + len + linp->lp_len - off) + 1;
 			
 		}
 			
@@ -267,8 +269,11 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 		 * the tuple end, stop validating the other rows (we don't know where to
 		 * continue anyway). */
 		
-		if (off + len > (header->pd_linp[i].lp_off + header->pd_linp[i].lp_len)) {
-			ereport(WARNING, (errmsg("[%d:%d] attribute '%s' (off=%d len=%d) overflows tuple end (off=%d, len=%d)", block, (i+1), rel->rd_att->attrs[j]->attname.data, off, len, header->pd_linp[i].lp_off, header->pd_linp[i].lp_len)));
+		if (off + len > (linp->lp_off + linp->lp_len)) {
+			ereport(WARNING,
+					(errmsg("[%d:%d] attribute '%s' (off=%d len=%d) overflows tuple end (off=%d, len=%d)",
+							block, offnum, rel->rd_att->attrs[j]->attname.data,
+							off, len, linp->lp_off, linp->lp_len)));
 			++nerrs;
 			break;
 		}
@@ -276,18 +281,20 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 		/* skip to the next attribute */
 		off += len;
 		
-		ereport(DEBUG3,(errmsg("[%d:%d] attribute '%s' len=%d", block, (i+1), rel->rd_att->attrs[j]->attname.data, len)));
-		
+		ereport(DEBUG3,(errmsg("[%d:%d] attribute '%s' len=%d", block, offnum, rel->rd_att->attrs[j]->attname.data, len)));
 	}
 	
-	ereport(DEBUG3,(errmsg("[%d:%d] last attribute ends at %d, tuple ends at %d", block, (i+1), off, header->pd_linp[i].lp_off + header->pd_linp[i].lp_len)));
+	ereport(DEBUG3,
+			(errmsg("[%d:%d] last attribute ends at %d, tuple ends at %d",
+					block, offnum, off, linp->lp_off + linp->lp_len)));
 	
 	/* after the last attribute, the offset should be exactly the same as the end of the tuple */
-	if (MAXALIGN(off) != header->pd_linp[i].lp_off + header->pd_linp[i].lp_len) {
-		ereport(WARNING, (errmsg("[%d:%d] the last attribute ends at %d but the tuple ends at %d", block, (i+1), off, header->pd_linp[i].lp_off + header->pd_linp[i].lp_len)));
+	if (MAXALIGN(off) != linp->lp_off + linp->lp_len) {
+		ereport(WARNING,
+				(errmsg("[%d:%d] the last attribute ends at %d but the tuple ends at %d",
+						block, offnum, off, linp->lp_off + linp->lp_len)));
 		++nerrs;
 	}
 	
 	return nerrs;
-
 }
