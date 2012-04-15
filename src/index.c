@@ -129,6 +129,11 @@ uint32 check_index_tuple(Relation rel, PageHeader header, int block, int i, char
 	
 	IndexTuple itup = (IndexTuple)(buffer + header->pd_linp[i].lp_off);
 	
+	/* FIXME This is used when checking overflowing attributes, but it's not clear what
+	 * exactly this means / how it works. Needs a bit more investigation and maybe a review
+	 * from soneone who really knows the b-tree implementation. */
+	bool hasVars = ((itup->t_info & INDEX_VAR_MASK) != 0);
+	
 	ereport(DEBUG2,(errmsg("[%d:%d] off=%d len=%d tid=(%d,%d)", block, (i+1),
 						   header->pd_linp[i].lp_off, header->pd_linp[i].lp_len,
 						   BlockIdGetBlockNumber(&(itup->t_tid.ip_blkid)),
@@ -163,7 +168,7 @@ uint32 check_index_tuple(Relation rel, PageHeader header, int block, int i, char
 	
 	/* check attributes only for tuples with (lp_flags==LP_NORMAL) */
 	if (header->pd_linp[i].lp_flags == LP_NORMAL) {
-		nerrs += check_index_tuple_attributes(rel, header, block, i + 1, buffer);
+		nerrs += check_index_tuple_attributes(rel, header, block, i + 1, buffer, hasVars);
 	}
 	
 	return nerrs;
@@ -171,7 +176,7 @@ uint32 check_index_tuple(Relation rel, PageHeader header, int block, int i, char
 }
 
 /* checks the individual attributes of the tuple */
-uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, OffsetNumber offnum, char *buffer) {
+uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, OffsetNumber offnum, char *buffer, bool hasVars) {
   
 	IndexTuple tuple;
 	uint32 nerrs = 0;
@@ -273,7 +278,7 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 		 * the tuple end, stop validating the other rows (we don't know where to
 		 * continue anyway). */
 		
-		if (off + len > (linp->lp_off + linp->lp_len)) {
+		if (hasVars && (off + len > (linp->lp_off + linp->lp_len))) {
 			ereport(WARNING,
 					(errmsg("[%d:%d] attribute '%s' (off=%d len=%d) overflows tuple end (off=%d, len=%d)",
 							block, offnum, rel->rd_att->attrs[j]->attname.data,
@@ -283,7 +288,7 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 		}
 		
 		/* skip to the next attribute */
-		off += len;
+		off += hasVars ? len : 0;
 		
 		ereport(DEBUG3,(errmsg("[%d:%d] attribute '%s' len=%d", block, offnum, rel->rd_att->attrs[j]->attname.data, len)));
 	}
@@ -292,8 +297,8 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 			(errmsg("[%d:%d] last attribute ends at %d, tuple ends at %d",
 					block, offnum, off, linp->lp_off + linp->lp_len)));
 	
-	/* after the last attribute, the offset should be exactly the same as the end of the tuple */
-	if (MAXALIGN(off) != linp->lp_off + linp->lp_len) {
+	/* after the last attribute, the offset should be less than the end of the tuple */
+	if (MAXALIGN(off) > linp->lp_off + linp->lp_len) {
 		ereport(WARNING,
 				(errmsg("[%d:%d] the last attribute ends at %d but the tuple ends at %d",
 						block, offnum, off, linp->lp_off + linp->lp_len)));
