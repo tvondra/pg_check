@@ -130,7 +130,8 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 	HeapTupleHeader tupheader;
 	uint32 nerrs = 0;
 	int j, off;
-	
+	int tuplenatts;
+
 	ereport(DEBUG2,(errmsg("[%d:%d] checking attributes for the tuple", block, (i+1))));
 
 	/* get the header of the tuple (it starts at the 'lp_off' offset and it's t_hoff long (incl. bitmap)) */
@@ -139,7 +140,8 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 	/* attribute offset - always starts at (buffer + off) */
 	off = header->pd_linp[i].lp_off + tupheader->t_hoff;
 
-	if (HeapTupleHeaderGetNatts(tupheader) > rel->rd_att->natts) {
+	tuplenatts = HeapTupleHeaderGetNatts(tupheader);
+	if (tuplenatts > rel->rd_att->natts) {
 		ereport(WARNING,
 				(errmsg("[%d:%d] tuple has too many attributes. %d found, %d expected",
 						block, (i+1),
@@ -149,10 +151,10 @@ uint32 check_heap_tuple_attributes(Relation rel, PageHeader header, int block, i
 	} else {
 		int	endoff;
 	  
-		ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes", block, (i+1), rel->rd_att->natts)));
+		ereport(DEBUG3,(errmsg("[%d:%d] tuple has %d attributes (%d in relation)", block, (i+1), tuplenatts, rel->rd_att->natts)));
 	  
 		/* check all the attributes */
-		for (j = 0; j < rel->rd_att->natts; j++) {
+		for (j = 0; j < tuplenatts; j++) {
 		  
 			/* default length of the attribute */
 			int len = rel->rd_att->attrs[j]->attlen;
