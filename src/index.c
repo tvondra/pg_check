@@ -204,16 +204,12 @@ uint32 check_index_tuple_attributes(Relation rel, PageHeader header, int block, 
 	/* TODO This is mostly copy'n'paste from check_heap_tuple_attributes,
 	   so maybe it could be refactored to share the code. */
 
-	/* For left-most tuples on non-leaf pages, there are no data actually
-	   (see src/backend/access/nbtree/README, last paragraph in section "Notes
-	   About Data Representation")
-   
-	   Use P_LEFTMOST/P_ISLEAF to identify such cases (for the leftmost item only)
-	   and set len = 0.
+	/* For non-leaf pages, the first data tuple may or may not actually have any
+	   data. See src/backend/access/nbtree/README, "Notes About Data
+	   Representation".
 	*/
-
-	if (P_LEFTMOST(opaque) && !P_ISLEAF(opaque) && offnum == P_FIRSTDATAKEY(opaque)) {
-		ereport(DEBUG3, (errmsg("[%d:%d] leftmost tuple on non-leaf block => no data, skipping", block, offnum)));
+	if (!P_ISLEAF(opaque) && offnum == P_FIRSTDATAKEY(opaque) && dlen == 0) {
+		ereport(DEBUG3, (errmsg("[%d:%d] first data key tuple on non-leaf block => no data, skipping", block, offnum)));
 		return nerrs;
 	}
 
