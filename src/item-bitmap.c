@@ -5,6 +5,11 @@
 
 #include "access/itup.h"
 
+#if (PG_VERSION_NUM >= 90300)
+#include <math.h>
+#include "access/htup_details.h"
+#endif
+
 /* allocate the memory in 1kB chunks - this needs to be large enough
  * to hold items for one page (8k ~ 290 bits, ie 32k ~ 1200 bits, so
  * this needs to be at least 150B)

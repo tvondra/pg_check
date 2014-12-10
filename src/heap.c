@@ -7,6 +7,10 @@
 
 #include "funcapi.h"
 
+#if (PG_VERSION_NUM >= 90300)
+#include "access/htup_details.h"
+#endif
+
 /* checks heap tuples (table) on the page, one by one */
 uint32 check_heap_tuples(Relation rel, PageHeader header, char *buffer, int block) {
 
