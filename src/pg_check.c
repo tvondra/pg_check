@@ -14,6 +14,11 @@
 #include "access/itup.h"
 #include "access/nbtree.h"
 #include "catalog/namespace.h"
+
+#if (PG_VERSION_NUM >= 90600)
+#include "catalog/pg_am.h"
+#endif
+
 #include "catalog/pg_class.h"
 #include "funcapi.h"
 #include "miscadmin.h"
