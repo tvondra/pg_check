@@ -55,16 +55,43 @@ check_heap_tuple(Relation rel, PageHeader header, BlockNumber block,
 	/* check length with respect to lp_flags (unused, normal, redirect, dead) */
 	if (lp->lp_flags == LP_REDIRECT)
 	{
+		OffsetNumber	offnum,
+						maxoff;
+
 		ereport(DEBUG2,
 				(errmsg("[%d:%d] tuple is LP_REDIRECT", block, (i+1))));
 
-		/* FIXME check that the LP_REDIRECT target is OK (exists, not empty) to handle HOT tuples properly */
-		/* items with LP_REDIRECT need to be handled differently (lp_off holds the link to the next tuple pointer) */
+		/* redirected line pointers must not have any storage associated */
 		if (lp->lp_len != 0)
 		{
 			ereport(WARNING,
 					(errmsg("[%d:%d] tuple with LP_REDIRECT and len != 0 (%d)",
 							block, (i+1), lp->lp_len)));
+			++nerrs;
+		}
+
+		/*
+		 * Check that the LP_REDIRECT target is OK (exists and is either
+		 * LP_NORMAL or LP_DEAD), as expected by HOT. But make sure the
+		 * offset is valid (below pd_lower).
+		 */
+		offnum = lp->lp_off;
+		maxoff = (header->pd_lower - SizeOfPageHeaderData) / sizeof(ItemIdData);
+
+		/* the target offset is bogus */
+		if (offnum > maxoff)
+		{
+			ereport(WARNING,
+					(errmsg("[%d:%d] LP_REDIRECT item points to invalid offset %u (max %u)",
+							block, (i+1), offnum, maxoff)));
+			++nerrs;
+		}
+		else if ((header->pd_linp[offnum-1].lp_flags != LP_NORMAL) &&
+				 (header->pd_linp[offnum-1].lp_flags != LP_DEAD))
+		{
+			ereport(WARNING,
+					(errmsg("[%d:%d] LP_REDIRECT item points to item that is not LP_NORMAL/LP_DEAD (flag %u)",
+							block, (i+1), header->pd_linp[offnum-1].lp_flags)));
 			++nerrs;
 		}
 
