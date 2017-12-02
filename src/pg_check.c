@@ -41,41 +41,47 @@ PG_MODULE_MAGIC;
 
 /* bitmap format (when pg_check.debug = true) */
 static const struct config_enum_entry bitmap_options[] = {
-        {"base64", BITMAP_BASE64, false},
-        {"hex", BITMAP_HEX, false},
-        {"binary", BITMAP_BINARY, false},
-        {"none", BITMAP_NONE, false},
-        {NULL, 0, false}
+	{"base64", BITMAP_BASE64, false},
+	{"hex", BITMAP_HEX, false},
+	{"binary", BITMAP_BINARY, false},
+	{"none", BITMAP_NONE, false},
+	{NULL, 0, false}
 };
 
-void        _PG_init(void);
+void _PG_init(void);
 
-bool	pgcheck_debug;
-int		pgcheck_bitmap_format = BITMAP_BINARY;
+bool pgcheck_debug;
+int pgcheck_bitmap_format = BITMAP_BINARY;
 
-Datum		pg_check_table(PG_FUNCTION_ARGS);
-Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
+Datum pg_check_table(PG_FUNCTION_ARGS);
+Datum pg_check_table_pages(PG_FUNCTION_ARGS);
 
-Datum		pg_check_index(PG_FUNCTION_ARGS);
-Datum		pg_check_index_pages(PG_FUNCTION_ARGS);
+Datum pg_check_index(PG_FUNCTION_ARGS);
+Datum pg_check_index_pages(PG_FUNCTION_ARGS);
 
-static uint32	check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
+static uint32 check_table(Oid relid,
+						bool checkIndexes, bool crossCheckIndexes,
+						BlockNumber blockFrom, BlockNumber blockTo,
+						bool blockRangeGiven);
 
-static uint32	check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven);
+static uint32 check_index(Oid indexOid,
+						BlockNumber blockFrom, BlockNumber blockTo,
+						bool blockRangeGiven);
 
-static uint32	check_index_oid(Oid	indexOid, item_bitmap * bitmap);
+static uint32 check_index_oid(Oid indexOid, item_bitmap * bitmap);
 
 /*
  * pg_check_table
  *
- * Checks the selected table (and optionally the indexes), returns number of warnings (issues found).
+ * Checks the selected table (and optionally the indexes), returns number
+ * of issues found.
  */
 PG_FUNCTION_INFO_V1(pg_check_table);
 
 Datum
 pg_check_table(PG_FUNCTION_ARGS)
 {
-	Oid		relid	 = PG_GETARG_OID(0);
+	Oid		relid = PG_GETARG_OID(0);
 	bool	checkIndexes = PG_GETARG_BOOL(1);
 	bool	crossCheckIndexes = PG_GETARG_BOOL(2);
 	uint32	nerrs;
@@ -88,16 +94,17 @@ pg_check_table(PG_FUNCTION_ARGS)
 /*
  * pg_check_table_pages
  *
- * Checks the selected pages of a table, returns number of warnings (issues found).
+ * Checks the selected range of pages of a table (but not indexes), returns
+ * number of issues found.
  */
 PG_FUNCTION_INFO_V1(pg_check_table_pages);
 
 Datum
 pg_check_table_pages(PG_FUNCTION_ARGS)
 {
-	Oid		relid	 = PG_GETARG_OID(0);
+	Oid		relid = PG_GETARG_OID(0);
 	int64	blkfrom  = PG_GETARG_INT64(1);
-	int64	blkto    = PG_GETARG_INT64(2);
+	int64	blkto = PG_GETARG_INT64(2);
 	uint32	nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
@@ -143,9 +150,9 @@ PG_FUNCTION_INFO_V1(pg_check_index_pages);
 Datum
 pg_check_index_pages(PG_FUNCTION_ARGS)
 {
-	Oid		relid	 = PG_GETARG_OID(0);
+	Oid		relid = PG_GETARG_OID(0);
 	int64	blkfrom  = PG_GETARG_INT64(1);
-	int64	blkto    = PG_GETARG_INT64(2);
+	int64	blkto = PG_GETARG_INT64(2);
 	uint32	nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
@@ -162,7 +169,14 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
 }
 
 /*
- * check the table, acquires AccessShareLock
+ * Check the table, all indexes on the table, and cross-check indexes.
+ *
+ * The function acquires ShareRowExclusiveLock or AccessShareLock.The
+ * stronger lock (AccessShareLock) is used when cross-check is requested.
+ *
+ * XXX The index cross-check is only allowed for full table check, but
+ * that is not really needed - we can scan indexes and only consider
+ * pointers to the specified block range.
  */
 static uint32
 check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
@@ -175,25 +189,23 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 	BlockNumber blkno;     /* current block */
 	PageHeader 	header;    /* page header */
 	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
-	
+
 	/* used to cross-check heap and indexes */
-	bool		bitmap_build = false;	/* true only when block range not given */
-	item_bitmap *bitmap_heap = NULL;	/* bitmap data */
-	
+	item_bitmap *bitmap_heap = NULL;
+
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pg_check functions"))));
 
 	if (blockRangeGiven && checkIndexes) /* shouldn't happen */
-		elog(ERROR, "invalid combination of checkIndexes and a block range");
+		elog(ERROR, "cross-check with indexes not possible with explicit block range");
 
-	/* when cross-checking, a more restrictive lock mode is needed */
-	if (crossCheckIndexes) {
+	/* When cross-checking, a more restrictive lock mode is needed. */
+	if (crossCheckIndexes)
 		rel = relation_open(relid, ShareRowExclusiveLock);
-	} else {
+	else
 		rel = relation_open(relid, AccessShareLock);
-	}
 
 	/* Check that this relation has storage */
 	if (rel->rd_rel->relkind != RELKIND_RELATION &&
@@ -203,25 +215,22 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 				 errmsg("object \"%s\" is not a table",
 						RelationGetRelationName(rel))));
 
-	/* Initialize buffer to copy to */
+	/* Initialize buffer to copy data to */
 	raw_page = (char *) palloc(BLCKSZ);
-	
+
 	if (!blockRangeGiven)
 	{
 		blockFrom = 0;
 		blockTo = RelationGetNumberOfBlocks(rel);
-		
+
 		/* build the bitmap only when we need to cross-check */
-		if (crossCheckIndexes) {
-			/* FIXME this needs exclusive lock on the relation (and indexes) */
-			bitmap_build = true;
+		if (crossCheckIndexes)
 			bitmap_heap  = bitmap_init(blockTo);
-		}
 	}
 
 	strategy = GetAccessStrategy(BAS_BULKREAD);
-		
-	/* Take a verbatim copy of each page, and check them */
+
+	/* Take a verbatim copy of each page, and check it */
 	for (blkno = blockFrom; blkno < blockTo; blkno++)
 	{
 		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
@@ -231,87 +240,86 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		ReleaseBuffer(buf);
-		
+
 		/* Call the 'check' routines - first just the header, then the tuples */
-		
 		header = (PageHeader)raw_page;
-		
+
 		nerrs += check_page_header(header, blkno);
-		
+
 		/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
 		nerrs += check_heap_tuples(rel, header, raw_page, blkno);
 
 		/* update the bitmap with items from this page (but only when needed) */
-		if (bitmap_build) {
+		if (bitmap_heap)
 			bitmap_add_heap_items(bitmap_heap, header, raw_page, blkno);
-		}
-		
 	}
-	
-	if (pgcheck_debug) {
+
+	if (pgcheck_debug)
 		bitmap_print(bitmap_heap, pgcheck_bitmap_format);
-	}
-	
+
 	/* check indexes */
-	if (checkIndexes) {
+	if (checkIndexes)
+	{
 		List	   *list_of_indexes;
 		ListCell   *index;
-		
+
 		item_bitmap * bitmap_idx = NULL;
-		
-		if (bitmap_build) {
+
+		/*
+		 * Create a bitmap with the same size as the heap bitmap, which
+		 * we will populate for each index.
+		 *
+		 * XXX this also does memcpy() of the contents, which is not
+		 * really necessary.
+		 */
+		if (bitmap_heap)
 			bitmap_idx = bitmap_copy(bitmap_heap);
-		}
-		
+
 		list_of_indexes = RelationGetIndexList(rel);
-		
-		foreach(index, list_of_indexes) {
-			
+
+		/*
+		 * XXX This should probably cross-check only btree indexes.
+		 */
+		foreach(index, list_of_indexes)
+		{
 			/* reset the bitmap (if needed) */
-			if (bitmap_build) {
+			if (bitmap_heap)
 				bitmap_reset(bitmap_idx);
-			}
-			
+
 			nerrs += check_index_oid(lfirst_oid(index), bitmap_idx);
-			
+
 			/* evaluate the bitmap difference (if needed) */
-			if (bitmap_build) {
-				
+			if (bitmap_heap)
+			{
 				/* compare the bitmaps */
 				int ndiffs = bitmap_compare(bitmap_heap, bitmap_idx);
-				
-				if (pgcheck_debug) {
+
+				if (pgcheck_debug)
 					bitmap_print(bitmap_idx, pgcheck_bitmap_format);
-				}
-				
-				if (ndiffs != 0) {
+
+				if (ndiffs != 0)
 					elog(WARNING, "there are %d differences between the table and the index", ndiffs);
-				}
+
 				nerrs += ndiffs;
-				
 			}
-			
 		}
-		
-		if (bitmap_build) {
+
+		if (bitmap_heap)
 			bitmap_free(bitmap_idx);
-		}
 
 		list_free(list_of_indexes);
 	}
 
 	/* release the the heap bitmap */
-	if (bitmap_build) {
+	if (bitmap_heap)
 		bitmap_free(bitmap_heap);
-	}
 
 	FreeAccessStrategy(strategy);
 
-	if (crossCheckIndexes) {
+	if (crossCheckIndexes)
 		relation_close(rel, ShareRowExclusiveLock);
-	} else {
+	else
 		relation_close(rel, AccessShareLock);
-	}
 
 	return nerrs;
 }
@@ -335,18 +343,17 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 	BlockNumber maxblock;  /* number of blocks of a table */
 	PageHeader 	header;    /* page header */
 	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
-	
+
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pg_check functions"))));
-	
+
 	/* FIXME maybe we need more strict lock here */
-	if (bitmap != NULL) {
+	if (bitmap != NULL)
 		rel = index_open(indexOid, ShareRowExclusiveLock);
-	} else {
+	else
 		rel = index_open(indexOid, AccessShareLock);
-	}
 
 	/* Check that this relation has storage */
 	if (rel->rd_rel->relkind != RELKIND_INDEX)
@@ -354,10 +361,21 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("object \"%s\" is not an index",
 						RelationGetRelationName(rel))));
-	
-	/* We only know how to check b-tree indexes, so ignore anything else */
+
+	/*
+	 * We only know how to check b-tree indexes, so ignore other types.
+	 *
+	 * We don't throw an error in this case, as this may be called from
+	 * check_table (for all indexes). We don't want to terminate the
+	 * whole table check.
+	 */
 	if (rel->rd_rel->relam != BTREE_AM_OID)
 	{
+		ereport(WARNING,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("skipping non-btree index \"%s\"",
+						RelationGetRelationName(rel))));
+
 		relation_close(rel, AccessShareLock);
 		return 0;
 	}
@@ -380,35 +398,41 @@ check_index_oid(Oid	indexOid, item_bitmap * bitmap)
 
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		ReleaseBuffer(buf);
-		
+
 		/* Call the 'check' routines - first just the header, then the contents. */
-		
+
 		header = (PageHeader)raw_page;
-		
+
 		nerrs += check_index_page(rel, header, raw_page, blkno);
-		
-		if (blkno > 0) {
-		
-			/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
+
+		/* if this is non-metapage, then check contents */
+		if (blkno > 0)
+		{
+			BTPageOpaque	opaque = BTPageGetOpaque(raw_page);
+
+			/*
+			 * XXX It probably does not make sense to try to cross-check
+			 * tuples if the page header is corrupted. So check what
+			 * check_index_page returns, and only proceed if there are
+			 * no errors detected.
+			 */
 			nerrs += check_index_tuples(rel, header, raw_page, blkno);
-			
-			/* if this is a leaf page (containing actual pointers to the heap),
-			   then update the bitmap */
-			if ((bitmap != NULL) && P_ISLEAF(BTPageGetOpaque(raw_page))) {
+
+			/*
+			 * If this is a leaf page (containing actual pointers to the
+			 * heap), then update the bitmap.
+			 */
+			if (bitmap && P_ISLEAF(opaque))
 				nerrs += bitmap_add_index_items(bitmap, header, raw_page, blkno);
-			}
-			
 		}
-		
 	}
 
 	FreeAccessStrategy(strategy);
 
-	if (bitmap != NULL) {
+	if (bitmap != NULL)
 		relation_close(rel, ShareRowExclusiveLock);
-	} else {
+	else
 		relation_close(rel, AccessShareLock);
-	}
 
 	return nerrs;
 }
@@ -437,7 +461,8 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 	rel = relation_open(indexOid, AccessShareLock);
 
 	/* Check that this relation is a b-tree index */
-	if ((rel->rd_rel->relkind != RELKIND_INDEX) || (rel->rd_rel->relam != BTREE_AM_OID)) {
+	if ((rel->rd_rel->relkind != RELKIND_INDEX) ||
+		(rel->rd_rel->relam != BTREE_AM_OID)) {
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("object \"%s\" is not a b-tree index",
@@ -446,9 +471,10 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 
 	/* Initialize buffer to copy to */
 	raw_page = (char *) palloc(BLCKSZ);
-	
+
 	/* Take a verbatim copies of the pages and check them */
-	if (!blockRangeGiven) {
+	if (!blockRangeGiven)
+	{
 		blockFrom = 0;
 		blockTo = RelationGetNumberOfBlocks(rel);
 	}
@@ -464,20 +490,25 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		ReleaseBuffer(buf);
-		
-		/* Call the 'check' routines - first just the header, then the contents. */
-		
+
+		/*
+		 * Call the 'check' routines - first just the header, then the
+		 * contents of the page.
+		 */
 		header = (PageHeader)raw_page;
-		
+
 		nerrs += check_index_page(rel, header, raw_page, blkno);
-		
-		if (blkno > 0) {
-			
-			/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
+
+		if (blkno > 0)
+		{
+			/*
+			 * XXX It probably does not make sense to try to cross-check
+			 * tuples if the page header is corrupted. So check what
+			 * check_index_page returns, and only proceed if there are
+			 * no errors detected.
+			 */
 			nerrs += check_index_tuples(rel, header, raw_page, blkno);
-			
 		}
-		
 	}
 
 	FreeAccessStrategy(strategy);
@@ -493,35 +524,33 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 void
 _PG_init(void)
 {
-    
-    /* Define custom GUC variables. */
-    DefineCustomBoolVariable("pg_check.debug",
-                              "print debugging info.",
-                             NULL,
-                             &pgcheck_debug,
-                             false,
-                             PGC_SUSET,
-                             0,
+	/* Define custom GUC variables. */
+	DefineCustomBoolVariable("pg_check.debug",
+							 "print debugging info.",
+							 NULL,
+							 &pgcheck_debug,
+							 false,
+							 PGC_SUSET,
+							 0,
 #if (PG_VERSION_NUM >= 90100)
-                             NULL,
+							 NULL,
 #endif
-                             NULL,
-                             NULL);
+							 NULL,
+							 NULL);
 
-    DefineCustomEnumVariable("pg_check.bitmap_format",
-                             "how to print bitmap when debugging",
-                             NULL,
-                             &pgcheck_bitmap_format,
-                             BITMAP_BINARY,
-                             bitmap_options,
-                             PGC_SUSET,
-                             0,
+	DefineCustomEnumVariable("pg_check.bitmap_format",
+							 "how to print bitmap when debugging",
+							 NULL,
+							 &pgcheck_bitmap_format,
+							 BITMAP_BINARY,
+							 bitmap_options,
+							 PGC_SUSET,
+							 0,
 #if (PG_VERSION_NUM >= 90100)
-                             NULL,
+							 NULL,
 #endif
-                             NULL,
-                             NULL);
+							 NULL,
+							 NULL);
 
-    EmitWarningsOnPlaceholders("pg_check");
-
+	EmitWarningsOnPlaceholders("pg_check");
 }
