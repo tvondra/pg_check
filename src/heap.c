@@ -10,6 +10,12 @@
 #include "heap.h"
 
 
+static uint32 check_heap_tuple(Relation rel, PageHeader header,
+							   BlockNumber block, int i, char *buffer);
+
+static uint32 check_heap_tuple_attributes(Relation rel, PageHeader header,
+							   BlockNumber block, int i, char *buffer);
+
 /* checks heap tuples (table) on the page, one by one */
 uint32
 check_heap_tuples(Relation rel, PageHeader header, char *buffer,
@@ -35,7 +41,7 @@ check_heap_tuples(Relation rel, PageHeader header, char *buffer,
 }
 
 /* checks that the tuples do not overlap and then the individual attributes */
-uint32
+static uint32
 check_heap_tuple(Relation rel, PageHeader header, BlockNumber block,
 				 int i, char *buffer)
 {
@@ -66,7 +72,8 @@ check_heap_tuple(Relation rel, PageHeader header, BlockNumber block,
 	}
 	else if (lp->lp_flags == LP_UNUSED)
 	{
-		ereport(DEBUG2,(errmsg("[%d:%d] tuple is LP_UNUSED", block, (i+1))));
+		ereport(DEBUG2,
+				(errmsg("[%d:%d] tuple is LP_UNUSED", block, (i+1))));
 
 		/* LP_UNUSED => (len = 0) */
 		if (lp->lp_len != 0)
@@ -81,56 +88,87 @@ check_heap_tuple(Relation rel, PageHeader header, BlockNumber block,
 	}
 	else if (lp->lp_flags == LP_DEAD)
 	{
-		/* FIXME might have data => how to check it ? */
+		/*
+		 * Dead tuples may or may not have storage, depending on if vacuum
+		 * did the first part of heap cleanup. If there is no storage, we
+		 * don't have anything to check. If there is storage, we do the
+		 * same check as for LP_NORMAL.
+		 */
 		ereport(DEBUG2,
-				(errmsg("[%d:%d] tuple is DEAD", block, (i+1))));
-		return nerrs;
+				(errmsg("[%d:%d] tuple is LP_DEAD", block, (i+1))));
+
+		/*
+		 * No storage, so we're done with this item pointer.
+		 *
+		 * XXX Maybe check that lp_off is set to 0 too?
+		 */
+		if (lp->lp_len == 0)
+			return nerrs;
 	}
-	else
+	else if (lp->lp_flags == LP_NORMAL)
 	{
 		ereport(DEBUG2,
 				(errmsg("[%d:%d] tuple is LP_NORMAL", block, (i+1))));
-
-		/* check that the values (length and offset) are within reasonable boundaries, (between 0 and BLCKSZ) */
-		/* FIXME those checks probably don't make much sense, as lp_off/lp_len are unsigned, but
-		 * there are some overflow issues (resulting in invalid memory alloc size and a crash). */
-
-		if (lp->lp_len <= 0)
-		{
-			ereport(WARNING,
-					(errmsg("[%d:%d] tuple with length <= 0 (%d)",
-							block, (i+1), lp->lp_len)));
-			++nerrs;
-		}
-
-		if (lp->lp_off <= 0)
-		{
-			ereport(WARNING,
-					(errmsg("[%d:%d] tuple with offset <= 0 (%d)",
-							block, (i+1), lp->lp_off)));
-			++nerrs;
-		}
-
-		/* position on the page */
-		if (lp->lp_off < header->pd_upper)
-		{
-			ereport(WARNING,
-					(errmsg("[%d:%d] tuple with offset - length < upper (%d - %d < %d)",
-							block, (i+1), lp->lp_off,
-							lp->lp_len, header->pd_upper)));
-			++nerrs;
-		}
-
-		if (lp->lp_off + lp->lp_len > header->pd_special)
-		{
-			ereport(WARNING,
-					(errmsg("[%d:%d] tuple with offset > special (%d > %d)",
-							block, (i+1), lp->lp_off, header->pd_special)));
-			++nerrs;
-		}
+	}
+	else
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] item has unknown lp_flag %u",
+						block, (i+1), lp->lp_flags)));
+		return ++nerrs;
 	}
 
-	/* check intersection with other tuples */
+	/*
+	 * So the item is either LP_NORMAL or LP_DEAD with storage. Check that
+	 * the values (length and offset) are within reasonable boundaries
+	 * (that is, between 0 and BLCKSZ).
+	 *
+	 * Note: The lp_len and lp_off fields are defined as unsigned, so it
+	 * does not make sense to check for negative values. Equality is enough.
+	 */
+	if (lp->lp_len == 0)
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] tuple with length = 0 (%d)",
+						block, (i+1), lp->lp_len)));
+		++nerrs;
+	}
+
+	if (lp->lp_off == 0)
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] tuple with offset <= 0 (%d)",
+						block, (i+1), lp->lp_off)));
+		++nerrs;
+	}
+
+	/*
+	 * Check both the starting and ending positions are the page (we have
+	 * checked that pd_upper/pd_special are valid with respect to BLCKSZ
+	 * in check_page_header).
+	 */
+	if (lp->lp_off < header->pd_upper)
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] tuple with offset - length < upper (%d - %d < %d)",
+						block, (i+1), lp->lp_off,
+						lp->lp_len, header->pd_upper)));
+		++nerrs;
+	}
+
+	if (lp->lp_off + lp->lp_len > header->pd_special)
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] tuple with offset > special (%d > %d)",
+						block, (i+1), lp->lp_off, header->pd_special)));
+		++nerrs;
+	}
+
+	/*
+	 * Check intersection with other tuples on the page. We only check
+	 * preceding line pointers, as the subsequent will be cross-checked
+	 * when check_heap_tuple is called for them.
+	 */
 
 	/* [A,B] vs [C,D] */
 	a = lp->lp_off;
@@ -140,8 +178,13 @@ check_heap_tuple(Relation rel, PageHeader header, BlockNumber block,
 	{
 		ItemId	lp2 = &header->pd_linp[j];
 
-		/* FIXME Skip UNUSED/REDIRECT/DEAD tuples (probably shouldn't skip DEAD ones) */
-		if (! (lp2->lp_flags == LP_NORMAL))
+		/*
+		 * We care about items with storage here, so we can skip LP_UNUSED
+		 * and LP_REDIRECT right away, and LP_DEAD if they have no storage.
+		 */
+		if (lp2->lp_flags == LP_UNUSED ||
+			lp2->lp_flags == LP_REDIRECT ||
+			(lp2->lp_flags == LP_DEAD && lp2->lp_len == 0))
 			continue;
 
 		c = lp2->lp_off;
@@ -162,7 +205,7 @@ check_heap_tuple(Relation rel, PageHeader header, BlockNumber block,
 }
 
 /* checks the individual attributes of the tuple */
-uint32
+static uint32
 check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 							int i, char *buffer)
 {
@@ -170,6 +213,7 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	uint32			nerrs = 0;
 	int				j, off, endoff;
 	int				tuplenatts;
+	bool			has_nulls = false;
 
 	ItemId			lp = &header->pd_linp[i];
 
@@ -186,6 +230,15 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	off = lp->lp_off + tupheader->t_hoff;
 
 	tuplenatts = HeapTupleHeaderGetNatts(tupheader);
+
+	/*
+	 * It's possible that the tuple descriptor has more attributes than the
+	 * on-disk tuple. That can happen e.g. after a new attribute is added
+	 * to the table in a wat that does not require table rewrite.
+	 *
+	 * However, the opposite should not happen - the on-disk tuple must not
+	 * have more attributes than the descriptor.
+	 */
 	if (tuplenatts > rel->rd_att->natts)
 	{
 		ereport(WARNING,
@@ -193,9 +246,7 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 						block, (i+1),
 						HeapTupleHeaderGetNatts(tupheader),
 						RelationGetNumberOfAttributes(rel))));
-		++nerrs;
-
-		return nerrs;
+		return ++nerrs;
 	}
 
 	ereport(DEBUG3,
@@ -216,7 +267,8 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 
 		/*
 		 * If the attribute is marked as NULL (in the tuple header), skip
-		 * to the next attribute.
+		 * to the next attribute. The bitmap is only present when the
+		 * tuple has HEAP_HASNULL flag.
 		 */
 		if ((tupheader->t_infomask & HEAP_HASNULL) &&
 			att_isnull(j, tupheader->t_bits))
@@ -224,6 +276,7 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 			ereport(DEBUG3,
 					(errmsg("[%d:%d] attribute '%s' is NULL (skipping)",
 							block, (i+1), attr->attname.data)));
+			has_nulls = true; /* remember we've seen NULL value */
 			continue;
 		}
 
@@ -233,12 +286,9 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 		if (is_varlena)
 		{
 			/*
-			 * other interesting macros (see postgres.h) - should do something about those ...
-			 *
-			 * VARATT_IS_COMPRESSED(PTR)		VARATT_IS_4B_C(PTR)
-			 * VARATT_IS_EXTERNAL(PTR)			VARATT_IS_1B_E(PTR)
-			 * VARATT_IS_SHORT(PTR)				VARATT_IS_1B(PTR)
-			 * VARATT_IS_EXTENDED(PTR)			(!VARATT_IS_4B_U(PTR))
+			 * FIXME This seems wrong, because VARSIZE_ANY will return length
+			 * of the actual value, not the on-disk length. That may differ
+			 * for TOASTed values, I guess.
 			 */
 
 			len = VARSIZE_ANY(buffer + off);
@@ -314,6 +364,17 @@ check_heap_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	ereport(DEBUG3,
 			(errmsg("[%d:%d] last attribute ends at %d, tuple ends at %d",
 					block, (i+1), off, lp->lp_off + lp->lp_len)));
+
+	/*
+	 * Check if tuples with HEAP_HASNULL actually have NULL attribute.
+	 */
+	if ((tupheader->t_infomask & HEAP_HASNULL) && !has_nulls)
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] has HEAP_HASNULL flag but no NULLs",
+						block, (i+1))));
+		++nerrs;
+	}
 
 	/*
 	 * The end of last attribute should fall within the length given in
