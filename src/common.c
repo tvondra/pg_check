@@ -68,7 +68,25 @@ check_page_header(PageHeader header, BlockNumber block)
 		return ++nerrs;
 	}
 
-	/* FIXME a check that page is new (PageIsNew) might be appropriate here */
+	/*
+	 * check that a page is new, and don't do any further checks for
+	 * such pages
+	 */
+	if (PageIsNew(header))
+	{
+		/* obsolete page version, so no further checks */
+		ereport(WARNING,
+				(errmsg("[%d] page is new (pd_upper=0)", block)));
+		/*
+		 * We intentionally do not increment the counter here, as new pages
+		 * are valid and expected to be found in relations. The rest of the
+		 * code should expect this to and deal with it sanely.
+		 *
+		 * XXX Maybe we need to invent a different way to pass info that
+		 * it's safe to perform further checks on the page?
+		 */
+		return nerrs;
+	}
 
 	/*
 	 * All the pointers should be positive (greater than PageHeaderData)
