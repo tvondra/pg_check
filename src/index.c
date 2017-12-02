@@ -142,7 +142,9 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 	uint32 nerrs = 0;
 	int j, a, b, c, d;
 
-	IndexTuple itup = (IndexTuple)(buffer + header->pd_linp[i].lp_off);
+	ItemId	lp = &header->pd_linp[i];
+
+	IndexTuple itup = (IndexTuple)(buffer + lp->lp_off);
 
 	/*
 	 * FIXME This is used when checking overflowing attributes, but it's not clear what
@@ -153,15 +155,15 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 
 	ereport(DEBUG2,
 			(errmsg("[%d:%d] off=%d len=%d tid=(%d,%d)", block, (i+1),
-					header->pd_linp[i].lp_off, header->pd_linp[i].lp_len,
-					BlockIdGetBlockNumber(&(itup->t_tid.ip_blkid)),
-					itup->t_tid.ip_posid)));
+					lp->lp_off, lp->lp_len,
+					ItemPointerGetBlockNumber(&(itup->t_tid)),
+					ItemPointerGetOffsetNumber(&(itup->t_tid)))));
 
 	/* check intersection with other tuples */
 
 	/* [A,B] vs [C,D] */
-	a = header->pd_linp[i].lp_off;
-	b = header->pd_linp[i].lp_off + header->pd_linp[i].lp_len;
+	a = lp->lp_off;
+	b = lp->lp_off + lp->lp_len;
 
 	ereport(DEBUG2,
 			(errmsg("[%d:%d] checking intersection with other tuples",
@@ -169,16 +171,18 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 
 	for (j = 0; j < i; j++)
 	{
+		ItemId	lp2 = &header->pd_linp[j];
+
 		/* FIXME Skip UNUSED/REDIRECT/DEAD tuples */
-		if (! (header->pd_linp[i].lp_flags == LP_NORMAL))
+		if (! (lp2->lp_flags == LP_NORMAL))
 		{
 			ereport(DEBUG3,
 					(errmsg("[%d:%d] skipped (not LP_NORMAL)", block, (j+1))));
 			continue;
 		}
 
-		c = header->pd_linp[j].lp_off;
-		d = header->pd_linp[j].lp_off + header->pd_linp[j].lp_len;
+		c = lp2->lp_off;
+		d = lp2->lp_off + lp2->lp_len;
 
 		/* [A,C,B] or [A,D,B] or [C,A,D] or [C,B,D] */
 		if (((a < c) && (c < b)) || ((a < d) && (d < b)) ||
@@ -192,7 +196,7 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 	}
 
 	/* check attributes only for tuples with (lp_flags==LP_NORMAL) */
-	if (header->pd_linp[i].lp_flags == LP_NORMAL)
+	if (lp->lp_flags == LP_NORMAL)
 		nerrs += check_index_tuple_attributes(rel, header, block, i + 1, buffer, dlen);
 
 	return nerrs;
@@ -248,24 +252,26 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	/* check all the index attributes */
 	for (j = 0; j < rel->rd_att->natts; j++)
 	{
-		/* default length of the attribute */
-		int len = rel->rd_att->attrs[j]->attlen;
+		Form_pg_attribute	attr = rel->rd_att->attrs[j];
+
+		/* actual length of the attribute value */
+		int len;
 
 		/* copy from src/backend/commands/analyze.c */
-		bool is_varlena  = (!rel->rd_att->attrs[j]->attbyval && len == -1);
-		bool is_varwidth = (!rel->rd_att->attrs[j]->attbyval && len < 0); /* thus it's "len = -2" */
+		bool is_varlena  = (!attr->attbyval && attr->attlen == -1);
+		bool is_varwidth = (!attr->attbyval && attr->attlen < 0);
 
 		/* if the attribute is marked as NULL (in the tuple header), skip to the next attribute */
 		if (IndexTupleHasNulls(tuple) && att_isnull(j, bitmap))
 		{
 			ereport(DEBUG3,
 					(errmsg("[%d:%d] attribute '%s' is NULL (skipping)",
-							block, offnum, rel->rd_att->attrs[j]->attname.data)));
+							block, offnum, attr->attname.data)));
 			continue;
 		}
 
 		/* fix the alignment (see src/include/access/tupmacs.h) */
-		off = att_align_pointer(off, rel->rd_att->attrs[j]->attalign, rel->rd_att->attrs[j]->attlen, buffer+off);
+		off = att_align_pointer(off, attr->attalign, attr->attlen, buffer+off);
 
 		if (is_varlena)
 		{
@@ -284,7 +290,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 			{
 				ereport(WARNING,
 						(errmsg("[%d:%d] attribute '%s' has negative length < 0 (%d)",
-								block, offnum, rel->rd_att->attrs[j]->attname.data, len)));
+								block, offnum, attr->attname.data, len)));
 				++nerrs;
 				break;
 			}
@@ -297,7 +303,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 				{
 					ereport(WARNING,
 							(errmsg("[%d:%d]  attribute '%s' has invalid length %d (should be between 0 and 1G)",
-									block, offnum, rel->rd_att->attrs[j]->attname.data, VARRAWSIZE_4B_C(buffer + off))));
+									block, offnum, attr->attname.data, VARRAWSIZE_4B_C(buffer + off))));
 					++nerrs;
 					/* no break here, this does not break the page structure - we may check the other attributes */
 				}
@@ -312,6 +318,11 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 			/* if the string is not properly terminated, then this returns 'remaining space + 1' so it's detected */
 			len = strnlen(buffer + off, linp->lp_off + len + linp->lp_len - off) + 1;
 		}
+		else
+			/* attributes with fixed length */
+			len = attr->attlen;
+
+		Assert(len >= 0);
 
 		/*
 		 * Check if the length makes sense (is not negative and does not overflow
@@ -322,7 +333,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 		{
 			ereport(WARNING,
 					(errmsg("[%d:%d] attribute '%s' (off=%d len=%d) overflows tuple end (off=%d, len=%d)",
-							block, offnum, rel->rd_att->attrs[j]->attname.data,
+							block, offnum, attr->attname.data,
 							off, len, linp->lp_off, linp->lp_len)));
 			++nerrs;
 			break;
@@ -333,7 +344,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 
 		ereport(DEBUG3,
 				(errmsg("[%d:%d] attribute '%s' len=%d",
-						block, offnum, rel->rd_att->attrs[j]->attname.data, len)));
+						block, offnum, attr->attname.data, len)));
 	}
 
 	ereport(DEBUG3,
