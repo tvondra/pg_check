@@ -42,9 +42,10 @@ check_page_header(PageHeader header, BlockNumber block)
 	}
 
 	/*
-	 * FIXME This checks that the layout version is between 0 and 4, but
-	 * the following checks depend on the format, so this should compare
-	 * to PG_PAGE_LAYOUT_VERSION and continue only if it's equal
+	 * This checks that the layout version is between 0 and 4, which are
+	 * page versions supported by PostgreSQL. But the following checks
+	 * depend on the format, so we only do them for the current version,
+	 * which is PG_PAGE_LAYOUT_VERSION (4).
 	 */
 	if ((PageGetPageLayoutVersion(header) < 0) ||
 		(PageGetPageLayoutVersion(header) > 4))
@@ -53,6 +54,18 @@ check_page_header(PageHeader header, BlockNumber block)
 				(errmsg("[%d] invalid page layout version %d",
 						block, PageGetPageLayoutVersion(header))));
 		++nerrs;
+	}
+	else if (PageGetPageLayoutVersion(header) != 4)
+	{
+		/* obsolete page version, so no further checks */
+		ereport(WARNING,
+				(errmsg("[%d] invalid page layout version %d",
+						block, PageGetPageLayoutVersion(header))));
+		/*
+		 * Increment the counter, to inform caller that this page does not
+		 * have the expected format.
+		 */
+		return ++nerrs;
 	}
 
 	/* FIXME a check that page is new (PageIsNew) might be appropriate here */
