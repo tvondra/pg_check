@@ -9,7 +9,8 @@
  * FIXME Check all the values for a page.
  *
  *	pd_lsn		- identifies xlog record for last change to this page.
- *	pd_tli		- ditto.
+ *	pd_tli		- ditto. (up to 9.2)
+ *	pd_checksum - page checksum, if set (since 9.3)
  *	pd_flags	- flag bits.
  *	pd_lower	- offset to start of free space.
  *	pd_upper	- offset to end of free space.
@@ -139,6 +140,25 @@ check_page_header(PageHeader header, BlockNumber block)
 						block, header->pd_upper, header->pd_special)));
 		++nerrs;
 	}
+
+	/*
+	 * PostgreSQL up to 9.2 had pd_tli in the header, with page timeline.
+	 * 9.3 replaced that with a checksum, so be careful when reading and
+	 * interpreting that value.
+	 *
+	 * We only check the timeline here, because we only deal with page
+	 * headers here. Checksums are verified elsewhere.
+	 */
+#if (PG_VERSION_NUM < 90300)
+	/* The timeline must not be greater than the current one. */
+	if (header->pd_tli > ThisTimeLineID)
+	{
+		ereport(WARNING,
+				(errmsg("[%d] invalid timeline %u (current %u)",
+						block, header->pd_tli, ThisTimeLineID)));
+		++nerrs;
+	}
+#endif
 
 	return nerrs;  
 }
