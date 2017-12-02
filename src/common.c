@@ -160,5 +160,16 @@ check_page_header(PageHeader header, BlockNumber block)
 	}
 #endif
 
+	/*
+	 * Check that we only have valid flags set.
+	 */
+	if ((header->pd_flags & PD_VALID_FLAG_BITS) != header->pd_flags)
+	{
+		ereport(WARNING,
+				(errmsg("[%d] page has invalid flags set %u",
+						block, header->pd_flags)));
+		++nerrs;
+	}
+
 	return nerrs;  
 }
