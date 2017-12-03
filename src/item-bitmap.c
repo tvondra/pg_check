@@ -19,17 +19,17 @@
 #define GetBitmapByte(p,o)	(GetBitmapIndex(p,o) / 8)
 #define GetBitmapBit(p,o)	(GetBitmapIndex(p,o) % 8)
 
-static int count_digits(uint64 values[], BlockNumber n);
-static char * itoa(int value, char * str, int maxlen);
-static char * hex(const char * data, int n);
-static char * binary(const char * data, int n);
-static char * base64(const char * data, int n);
+static int	count_digits(uint64 values[], BlockNumber n);
+static char *itoa(int value, char *str, int maxlen);
+static char *hex(const char *data, int n);
+static char *binary(const char *data, int n);
+static char *base64(const char *data, int n);
 
 /* init the bitmap (allocate, set default values) */
 item_bitmap *
 bitmap_init(BlockNumber npages)
 {
-	item_bitmap * bitmap;
+	item_bitmap *bitmap;
 
 	/* sanity check */
 	Assert(npages >= 0);
@@ -49,7 +49,7 @@ bitmap_init(BlockNumber npages)
 item_bitmap *
 bitmap_copy(item_bitmap * src)
 {
-	item_bitmap * bitmap;
+	item_bitmap *bitmap;
 
 	/* sanity check */
 	Assert(src != NULL);
@@ -70,14 +70,14 @@ bitmap_copy(item_bitmap * src)
 
 /* reset the bitmap data (not the page counts etc.) */
 void
-bitmap_reset(item_bitmap* bitmap)
+bitmap_reset(item_bitmap * bitmap)
 {
 	memset(bitmap->data, 0, bitmap->nbytes);
 }
 
 /* free the allocated resources */
 void
-bitmap_free(item_bitmap* bitmap)
+bitmap_free(item_bitmap * bitmap)
 {
 	Assert(bitmap != NULL);
 
@@ -92,11 +92,11 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 					  char *raw_page, BlockNumber page)
 {
 	/* tuple checks */
-	int		nerrs = 0;
-	int		ntuples = PageGetMaxOffsetNumber(raw_page);
-	int		item;
-	Page	p = (Page)raw_page;
-	bool	add[MaxHeapTuplesPerPage];
+	int			nerrs = 0;
+	int			ntuples = PageGetMaxOffsetNumber(raw_page);
+	int			item;
+	Page		p = (Page) raw_page;
+	bool		add[MaxHeapTuplesPerPage];
 
 	/* assume we're adding all items from this heap page */
 	memset(add, 1, sizeof(add));
@@ -104,12 +104,12 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 	/*
 	 * Walk and remove all LP_UNUSED pointers, and LP_REDIRECT targets.
 	 *
-	 * XXX Do we need to do something about LP_DEAD rows here? At this
-	 * point we keep them in the bitmap.
+	 * XXX Do we need to do something about LP_DEAD rows here? At this point
+	 * we keep them in the bitmap.
 	 */
 	for (item = 0; item < ntuples; item++)
 	{
-		ItemId	lp = &header->pd_linp[item];
+		ItemId		lp = &header->pd_linp[item];
 
 		if (lp->lp_flags == LP_UNUSED)
 			add[item] = false;
@@ -125,7 +125,7 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 	 */
 	for (item = 0; item < ntuples; item++)
 	{
-		ItemId	lp = &header->pd_linp[item];
+		ItemId		lp = &header->pd_linp[item];
 
 		if ((lp->lp_flags == LP_NORMAL) ||
 			((lp->lp_flags == LP_DEAD) && (lp->lp_len > 0)))
@@ -154,14 +154,14 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 
 /* mark the (page,item) as occupied */
 void
-bitmap_set(item_bitmap *bitmap, BlockNumber page, int item)
+bitmap_set(item_bitmap * bitmap, BlockNumber page, int item)
 {
-	int byte = GetBitmapByte(page, item);
-	int bit  = GetBitmapBit(page, item);
+	int			byte = GetBitmapByte(page, item);
+	int			bit = GetBitmapBit(page, item);
 
 	if (page >= bitmap->npages)
 	{
-		elog(WARNING, "invalid page %d (max page %d)", page, bitmap->npages-1);
+		elog(WARNING, "invalid page %d (max page %d)", page, bitmap->npages - 1);
 		return;
 	}
 
@@ -179,12 +179,12 @@ bitmap_set(item_bitmap *bitmap, BlockNumber page, int item)
 bool
 bitmap_get(item_bitmap * bitmap, BlockNumber page, int item)
 {
-	int byte = GetBitmapByte(page, item);
-	int bit  = GetBitmapBit(page, item);
+	int			byte = GetBitmapByte(page, item);
+	int			bit = GetBitmapBit(page, item);
 
 	if (page >= bitmap->npages)
 	{
-		elog(WARNING, "invalid page %d (max page %d)", page, bitmap->npages-1);
+		elog(WARNING, "invalid page %d (max page %d)", page, bitmap->npages - 1);
 		return false;
 	}
 
@@ -201,9 +201,9 @@ bitmap_get(item_bitmap * bitmap, BlockNumber page, int item)
 uint64
 bitmap_count(item_bitmap * bitmap)
 {
-	Size i;
-	int j;
-	uint64 items = 0;
+	Size		i;
+	int			j;
+	uint64		items = 0;
 
 	for (i = 0; i < bitmap->nbytes; i++)
 	{
@@ -221,8 +221,8 @@ bitmap_count(item_bitmap * bitmap)
 uint64
 bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b)
 {
-	BlockNumber		block;
-	OffsetNumber	offset;
+	BlockNumber block;
+	OffsetNumber offset;
 	uint64		ndiff;
 
 	Assert(bitmap_a->nbytes == bitmap_b->nbytes);
@@ -250,11 +250,11 @@ bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b)
 void
 bitmap_print(item_bitmap * bitmap, BitmapFormat format)
 {
-	int i = 0;
-	int len = count_digits(bitmap->pages, bitmap->npages) + bitmap->npages;
-	char pages[len];
-	char *ptr = pages;
-	char *data = NULL;
+	int			i = 0;
+	int			len = count_digits(bitmap->pages, bitmap->npages) + bitmap->npages;
+	char		pages[len];
+	char	   *ptr = pages;
+	char	   *data = NULL;
 
 	ptr[0] = '\0';
 	for (i = 0; i < bitmap->npages; i++)
@@ -280,12 +280,12 @@ bitmap_print(item_bitmap * bitmap, BitmapFormat format)
 	if (format == BITMAP_NONE)
 	{
 		elog(WARNING, "bitmap nbytes=%zu nbits=%ld npages=%d pages=[%s]",
-			bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages);
+			 bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages);
 	}
 	else
 	{
 		elog(WARNING, "bitmap nbytes=%zu nbits=%ld npages=%d pages=[%s] data=[%s]",
-			bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages, data);
+			 bitmap->nbytes, bitmap_count(bitmap), bitmap->npages, pages, data);
 	}
 
 	pfree(data);
@@ -295,29 +295,33 @@ bitmap_print(item_bitmap * bitmap, BitmapFormat format)
 static int
 count_digits(uint64 values[], BlockNumber n)
 {
-	int i, digits = 0;
+	int			i,
+				digits = 0;
+
 	for (i = 0; i < n; i++)
-		digits += (int)ceil(log(values[i]) / log(10));
+		digits += (int) ceil(log(values[i]) / log(10));
 
 	return digits;
 }
 
 /* utility to fill an integer value in a given value */
 static char *
-itoa(int value, char * str, int maxlen)
+itoa(int value, char *str, int maxlen)
 {
 	return str + snprintf(str, maxlen, "%d", value);
 }
 
 /* encode data to hex */
 static char *
-hex(const char * data, int n)
+hex(const char *data, int n)
 {
-	int i, w = 0;
+	int			i,
+				w = 0;
 	static const char hex[] = "0123456789abcdef";
-	char * result = palloc(n*2+1);
+	char	   *result = palloc(n * 2 + 1);
 
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < n; i++)
+	{
 		result[w++] = hex[(data[i] >> 4) & 0x0F];
 		result[w++] = hex[data[i] & 0x0F];
 	}
@@ -328,10 +332,12 @@ hex(const char * data, int n)
 }
 
 static char *
-binary(const char * data, int n)
+binary(const char *data, int n)
 {
-	int i, j, k = 0;
-	char *result = palloc(n*8+10);
+	int			i,
+				j,
+				k = 0;
+	char	   *result = palloc(n * 8 + 10);
 
 	for (i = 0; i < n; i++)
 	{
@@ -351,13 +357,14 @@ binary(const char * data, int n)
 
 /* encode data to base64 */
 static char *
-base64(const char * data, int n)
+base64(const char *data, int n)
 {
-	int i, k = 0;
-	static const char	_base64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	char 			   *result = palloc(4*((n+2)/3) + 1);
-	uint32				buf = 0;
-	int					pos = 2;
+	int			i,
+				k = 0;
+	static const char _base64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	char	   *result = palloc(4 * ((n + 2) / 3) + 1);
+	uint32		buf = 0;
+	int			pos = 2;
 
 	for (i = 0; i < n; i++)
 	{

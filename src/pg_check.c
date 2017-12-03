@@ -48,26 +48,26 @@ static const struct config_enum_entry bitmap_options[] = {
 	{NULL, 0, false}
 };
 
-void _PG_init(void);
+void		_PG_init(void);
 
-bool pgcheck_debug;
-int pgcheck_bitmap_format = BITMAP_BINARY;
+bool		pgcheck_debug;
+int			pgcheck_bitmap_format = BITMAP_BINARY;
 
-Datum pg_check_table(PG_FUNCTION_ARGS);
-Datum pg_check_table_pages(PG_FUNCTION_ARGS);
+Datum		pg_check_table(PG_FUNCTION_ARGS);
+Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
 
-Datum pg_check_index(PG_FUNCTION_ARGS);
-Datum pg_check_index_pages(PG_FUNCTION_ARGS);
+Datum		pg_check_index(PG_FUNCTION_ARGS);
+Datum		pg_check_index_pages(PG_FUNCTION_ARGS);
 
 static uint32 check_table(Oid relid,
-						bool checkIndexes, bool crossCheckIndexes,
-						BlockNumber blockFrom, BlockNumber blockTo,
-						bool blockRangeGiven);
+			bool checkIndexes, bool crossCheckIndexes,
+			BlockNumber blockFrom, BlockNumber blockTo,
+			bool blockRangeGiven);
 
 static uint32 check_index(Oid indexOid,
-						BlockNumber blockFrom, BlockNumber blockTo,
-						bool blockRangeGiven,
-						item_bitmap *bitmap, bool *crossCheck);
+			BlockNumber blockFrom, BlockNumber blockTo,
+			bool blockRangeGiven,
+			item_bitmap * bitmap, bool *crossCheck);
 
 /*
  * pg_check_table
@@ -80,10 +80,10 @@ PG_FUNCTION_INFO_V1(pg_check_table);
 Datum
 pg_check_table(PG_FUNCTION_ARGS)
 {
-	Oid		relid = PG_GETARG_OID(0);
-	bool	checkIndexes = PG_GETARG_BOOL(1);
-	bool	crossCheckIndexes = PG_GETARG_BOOL(2);
-	uint32	nerrs;
+	Oid			relid = PG_GETARG_OID(0);
+	bool		checkIndexes = PG_GETARG_BOOL(1);
+	bool		crossCheckIndexes = PG_GETARG_BOOL(2);
+	uint32		nerrs;
 
 	nerrs = check_table(relid, checkIndexes, crossCheckIndexes, 0, 0, false);
 
@@ -101,10 +101,10 @@ PG_FUNCTION_INFO_V1(pg_check_table_pages);
 Datum
 pg_check_table_pages(PG_FUNCTION_ARGS)
 {
-	Oid		relid = PG_GETARG_OID(0);
-	int64	blkfrom  = PG_GETARG_INT64(1);
-	int64	blkto = PG_GETARG_INT64(2);
-	uint32	nerrs;
+	Oid			relid = PG_GETARG_OID(0);
+	int64		blkfrom = PG_GETARG_INT64(1);
+	int64		blkto = PG_GETARG_INT64(2);
+	uint32		nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
 		ereport(ERROR,
@@ -131,8 +131,8 @@ PG_FUNCTION_INFO_V1(pg_check_index);
 Datum
 pg_check_index(PG_FUNCTION_ARGS)
 {
-	Oid		relid = PG_GETARG_OID(0);
-	uint32	nerrs;
+	Oid			relid = PG_GETARG_OID(0);
+	uint32		nerrs;
 
 	nerrs = check_index(relid, 0, 0, false, NULL, NULL);
 
@@ -149,10 +149,10 @@ PG_FUNCTION_INFO_V1(pg_check_index_pages);
 Datum
 pg_check_index_pages(PG_FUNCTION_ARGS)
 {
-	Oid		relid = PG_GETARG_OID(0);
-	BlockNumber	blkfrom = (BlockNumber) PG_GETARG_INT64(1);
-	BlockNumber	blkto = (BlockNumber) PG_GETARG_INT64(2);
-	uint32	nerrs;
+	Oid			relid = PG_GETARG_OID(0);
+	BlockNumber blkfrom = (BlockNumber) PG_GETARG_INT64(1);
+	BlockNumber blkto = (BlockNumber) PG_GETARG_INT64(2);
+	uint32		nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
 		ereport(ERROR,
@@ -181,13 +181,13 @@ static uint32
 check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 			BlockNumber blockFrom, BlockNumber blockTo, bool blockRangeGiven)
 {
-	Relation	rel;       /* relation for the 'relname' */
-	char	   *raw_page;  /* raw data of the page */
-	Buffer		buf;       /* buffer the page is read into */
-	uint32		nerrs = 0; /* number of errors found */
-	BlockNumber blkno;     /* current block */
-	PageHeader 	header;    /* page header */
-	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
+	Relation	rel;			/* relation for the 'relname' */
+	char	   *raw_page;		/* raw data of the page */
+	Buffer		buf;			/* buffer the page is read into */
+	uint32		nerrs = 0;		/* number of errors found */
+	BlockNumber blkno;			/* current block */
+	PageHeader	header;			/* page header */
+	BufferAccessStrategy strategy;	/* bulk strategy to avoid polluting cache */
 
 	/* used to cross-check heap and indexes */
 	item_bitmap *bitmap_heap = NULL;
@@ -197,7 +197,7 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pg_check functions"))));
 
-	if (blockRangeGiven && checkIndexes) /* shouldn't happen */
+	if (blockRangeGiven && checkIndexes)	/* shouldn't happen */
 		elog(ERROR, "cross-check with indexes not possible with explicit block range");
 
 	/* When cross-checking, a more restrictive lock mode is needed. */
@@ -224,7 +224,7 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 
 		/* build the bitmap only when we need to cross-check */
 		if (crossCheckIndexes)
-			bitmap_heap  = bitmap_init(blockTo);
+			bitmap_heap = bitmap_init(blockTo);
 	}
 
 	strategy = GetAccessStrategy(BAS_BULKREAD);
@@ -241,11 +241,14 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		ReleaseBuffer(buf);
 
 		/* Call the 'check' routines - first just the header, then the tuples */
-		header = (PageHeader)raw_page;
+		header = (PageHeader) raw_page;
 
 		nerrs += check_page_header(header, blkno);
 
-		/* FIXME Does that make sense to check the tuples if the page header is corrupted? */
+		/*
+		 * FIXME Does that make sense to check the tuples if the page header
+		 * is corrupted?
+		 */
 		nerrs += check_heap_tuples(rel, header, raw_page, blkno);
 
 		/* update the bitmap with items from this page (but only when needed) */
@@ -262,14 +265,14 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		List	   *list_of_indexes;
 		ListCell   *index;
 
-		item_bitmap * bitmap_idx = NULL;
+		item_bitmap *bitmap_idx = NULL;
 
 		/*
-		 * Create a bitmap with the same size as the heap bitmap, which
-		 * we will populate for each index.
+		 * Create a bitmap with the same size as the heap bitmap, which we
+		 * will populate for each index.
 		 *
-		 * XXX this also does memcpy() of the contents, which is not
-		 * really necessary.
+		 * XXX this also does memcpy() of the contents, which is not really
+		 * necessary.
 		 */
 		if (bitmap_heap)
 			bitmap_idx = bitmap_copy(bitmap_heap);
@@ -281,7 +284,7 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		 */
 		foreach(index, list_of_indexes)
 		{
-			bool	cross_check;
+			bool		cross_check;
 
 			/* reset the bitmap (if needed) */
 			if (bitmap_heap)
@@ -294,7 +297,7 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 			if (bitmap_heap && cross_check)
 			{
 				/* compare the bitmaps */
-				int ndiffs = bitmap_compare(bitmap_heap, bitmap_idx);
+				int			ndiffs = bitmap_compare(bitmap_heap, bitmap_idx);
 
 				if (pgcheck_debug)
 					bitmap_print(bitmap_idx, pgcheck_bitmap_format);
@@ -331,17 +334,17 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
  */
 static uint32
 check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
-			bool blockRangeGiven, item_bitmap *bitmap, bool *crossCheck)
+			bool blockRangeGiven, item_bitmap * bitmap, bool *crossCheck)
 {
-	Relation	rel;		/* relation for the 'relname' */
-	char	   *raw_page;	/* raw data of the page */
-	Buffer		buf;		/* buffer the page is read into */
-	uint32      nerrs = 0;	/* number of errors found */
-	BlockNumber blkno;		/* current block */
-	PageHeader 	header;		/* page header */
-	int			lmode;		/* lock mode */
-	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
-	check_page_cb	check_page;
+	Relation	rel;			/* relation for the 'relname' */
+	char	   *raw_page;		/* raw data of the page */
+	Buffer		buf;			/* buffer the page is read into */
+	uint32		nerrs = 0;		/* number of errors found */
+	BlockNumber blkno;			/* current block */
+	PageHeader	header;			/* page header */
+	int			lmode;			/* lock mode */
+	BufferAccessStrategy strategy;	/* bulk strategy to avoid polluting cache */
+	check_page_cb check_page;
 
 	if (!superuser())
 		ereport(ERROR,
@@ -365,9 +368,9 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 	}
 
 	/*
-	 * See if we have check methods for this access methods. If we find
-	 * no am-specific check methods, we'll still do at least the basic
-	 * checks of page format.
+	 * See if we have check methods for this access methods. If we find no
+	 * am-specific check methods, we'll still do at least the basic checks of
+	 * page format.
 	 */
 	check_page = lookup_check_method(rel->rd_rel->relam, crossCheck);
 
@@ -397,7 +400,7 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 		 * Call the 'check' routines - first just the header, then the
 		 * contents of the page.
 		 */
-		header = (PageHeader)raw_page;
+		header = (PageHeader) raw_page;
 
 		nerrs += check_page(rel, header, blkno, raw_page, bitmap);
 	}

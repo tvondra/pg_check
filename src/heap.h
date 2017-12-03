@@ -4,6 +4,6 @@
 #include "postgres.h"
 #include "access/heapam.h"
 
-uint32 check_heap_tuples(Relation rel, PageHeader header, char *buffer, BlockNumber block);
+uint32		check_heap_tuples(Relation rel, PageHeader header, char *buffer, BlockNumber block);
 
-#endif   /* HEAP_CHECK_H */
+#endif							/* HEAP_CHECK_H */

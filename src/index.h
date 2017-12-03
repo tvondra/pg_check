@@ -6,7 +6,7 @@
 #include "heap.h"
 #include "item-bitmap.h"
 
-typedef uint32 (* check_page_cb)(Relation, PageHeader, BlockNumber,
+typedef uint32 (*check_page_cb) (Relation, PageHeader, BlockNumber,
 								 char *, item_bitmap *);
 
 check_page_cb lookup_check_method(Oid oid, bool *crosscheck);
