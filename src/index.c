@@ -139,19 +139,37 @@ uint32
 check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 				  int i, char *buffer)
 {
+	int dlen;
 	uint32 nerrs = 0;
 	int j, a, b, c, d;
 
 	ItemId	lp = &header->pd_linp[i];
+	IndexTuple itup;
 
-	IndexTuple itup = (IndexTuple)(buffer + lp->lp_off);
+	/* we can ignore unused items */
+	if (lp->lp_flags == LP_UNUSED)
+	{
+		ereport(DEBUG2,
+				(errmsg("[%d:%d] index item is unused",
+						block, (i+1))));
+		return nerrs;
+	}
 
 	/*
-	 * FIXME This is used when checking overflowing attributes, but it's not clear what
-	 * exactly this means / how it works. Needs a bit more investigation and maybe a review
-	 * from soneone who really knows the b-tree implementation.
+	 * We only expect LP_NORMAL and LP_UNUSED items in indexes, so report
+	 * any items with unexpected status.
 	 */
-	int dlen = IndexTupleSize(itup) - IndexInfoFindDataOffset(itup->t_info);
+	if (lp->lp_flags != LP_NORMAL)
+	{
+		ereport(DEBUG2,
+				(errmsg("[%d:%d] index item has unexpected lp_flags (%u)",
+						block, (i+1), lp->lp_flags)));
+		return ++nerrs;
+	}
+
+	/* OK, so this is LP_NORMAL index item, and we can inspect it. */
+
+	itup = (IndexTuple)(buffer + lp->lp_off);
 
 	ereport(DEBUG2,
 			(errmsg("[%d:%d] off=%d len=%d tid=(%d,%d)", block, (i+1),
@@ -173,11 +191,21 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 	{
 		ItemId	lp2 = &header->pd_linp[j];
 
-		/* FIXME Skip UNUSED/REDIRECT/DEAD tuples */
-		if (! (lp2->lp_flags == LP_NORMAL))
+		/*
+		 * We only expect LP_NORMAL and LP_UNUSED items in (btree) indexes,
+		 * and we can skip the unused ones.
+		 */
+		if (lp2->lp_flags == LP_UNUSED)
 		{
 			ereport(DEBUG3,
-					(errmsg("[%d:%d] skipped (not LP_NORMAL)", block, (j+1))));
+					(errmsg("[%d:%d] skipped (LP_UNUSED)", block, (j+1))));
+			continue;
+		}
+		else if (lp2->lp_flags != LP_NORMAL)
+		{
+			ereport(WARNING,
+					(errmsg("[%d:%d] index item with unexpected flags (%d)",
+							block, (j+1), lp2->lp_flags)));
 			continue;
 		}
 
@@ -195,9 +223,12 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 		}
 	}
 
+	/* compute size of the data stored in the index tuple */
+	dlen = IndexTupleSize(itup) - IndexInfoFindDataOffset(itup->t_info);
+
 	/* check attributes only for tuples with (lp_flags==LP_NORMAL) */
-	if (lp->lp_flags == LP_NORMAL)
-		nerrs += check_index_tuple_attributes(rel, header, block, i + 1, buffer, dlen);
+	nerrs += check_index_tuple_attributes(rel, header, block, i + 1,
+										  buffer, dlen);
 
 	return nerrs;
 }
@@ -214,6 +245,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	bits8 * bitmap;
 	BTPageOpaque opaque;
 	ItemId	linp;
+	bool	has_nulls = false;
 
 	ereport(DEBUG2,
 			(errmsg("[%d:%d] checking attributes for the tuple", block, offnum)));
@@ -234,11 +266,8 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	bitmap = (bits8*)(buffer + linp->lp_off + sizeof(IndexTupleData));
 
 	/*
-	 * TODO This is mostly copy'n'paste from check_heap_tuple_attributes,
-	 * so maybe it could be refactored to share the code.
-	 *
 	 * For non-leaf pages, the first data tuple may or may not actually have
-	 * anydata. See src/backend/access/nbtree/README, "Notes About Data
+	 * any data. See src/backend/access/nbtree/README, "Notes About Data
 	 * Representation".
 	 */
 	if (!P_ISLEAF(opaque) && offnum == P_FIRSTDATAKEY(opaque) && dlen == 0)
@@ -249,7 +278,12 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 		return nerrs;
 	}
 
-	/* check all the index attributes */
+	/*
+	 * check all the index attributes
+	 *
+	 * TODO This is mostly copy'n'paste from check_heap_tuple_attributes,
+	 * so maybe it could be refactored to share the code.
+	 */
 	for (j = 0; j < rel->rd_att->natts; j++)
 	{
 		Form_pg_attribute	attr = rel->rd_att->attrs[j];
@@ -267,6 +301,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 			ereport(DEBUG3,
 					(errmsg("[%d:%d] attribute '%s' is NULL (skipping)",
 							block, offnum, attr->attname.data)));
+			has_nulls = true;
 			continue;
 		}
 
@@ -276,12 +311,8 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 		if (is_varlena)
 		{
 			/*
-			 * other interesting macros (see postgres.h) - should do something about those ...
-			 *
-			 * VARATT_IS_COMPRESSED(PTR)		VARATT_IS_4B_C(PTR)
-			 * VARATT_IS_EXTERNAL(PTR)			VARATT_IS_1B_E(PTR)
-			 * VARATT_IS_SHORT(PTR)				VARATT_IS_1B(PTR)
-			 * VARATT_IS_EXTENDED(PTR)			(!VARATT_IS_4B_U(PTR))
+			 * We don't support toasted values in indexes, so this should
+			 * not have the same issue as check_heap_tuple_attributes.
 			 */
 
 			len = VARSIZE_ANY(buffer + off);
@@ -350,6 +381,17 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 	ereport(DEBUG3,
 			(errmsg("[%d:%d] last attribute ends at %d, tuple ends at %d",
 					block, offnum, off, linp->lp_off + linp->lp_len)));
+
+	/*
+	 * Check if tuples with nulls (INDEX_NULL_MASK) actually have NULLs.
+	 */
+	if (IndexTupleHasNulls(tuple) && !has_nulls)
+	{
+		ereport(WARNING,
+				(errmsg("[%d:%d] tuple has INDEX_NULL_MASKL flag but no NULLs",
+						block, offnum)));
+		++nerrs;
+	}
 
 	/* after the last attribute, the offset should be less than the end of the tuple */
 	if (MAXALIGN(off) > linp->lp_off + linp->lp_len)
