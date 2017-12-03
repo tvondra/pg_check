@@ -66,9 +66,8 @@ static uint32 check_table(Oid relid,
 
 static uint32 check_index(Oid indexOid,
 						BlockNumber blockFrom, BlockNumber blockTo,
-						bool blockRangeGiven);
-
-static uint32 check_index_oid(Oid indexOid, item_bitmap * bitmap);
+						bool blockRangeGiven,
+						item_bitmap *bitmap, bool *crossCheck);
 
 /*
  * pg_check_table
@@ -135,7 +134,7 @@ pg_check_index(PG_FUNCTION_ARGS)
 	Oid		relid = PG_GETARG_OID(0);
 	uint32	nerrs;
 
-	nerrs = check_index(relid, 0, 0, false);
+	nerrs = check_index(relid, 0, 0, false, NULL, NULL);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -151,8 +150,8 @@ Datum
 pg_check_index_pages(PG_FUNCTION_ARGS)
 {
 	Oid		relid = PG_GETARG_OID(0);
-	int64	blkfrom  = PG_GETARG_INT64(1);
-	int64	blkto = PG_GETARG_INT64(2);
+	BlockNumber	blkfrom = (BlockNumber) PG_GETARG_INT64(1);
+	BlockNumber	blkto = (BlockNumber) PG_GETARG_INT64(2);
 	uint32	nerrs;
 
 	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
@@ -163,7 +162,7 @@ pg_check_index_pages(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errmsg("invalid ending block number")));
 
-	nerrs = check_index(relid, (BlockNumber) blkfrom, (BlockNumber) blkto, true);
+	nerrs = check_index(relid, blkfrom, blkto, true, NULL, NULL);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -282,14 +281,17 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 		 */
 		foreach(index, list_of_indexes)
 		{
+			bool	cross_check;
+
 			/* reset the bitmap (if needed) */
 			if (bitmap_heap)
 				bitmap_reset(bitmap_idx);
 
-			nerrs += check_index_oid(lfirst_oid(index), bitmap_idx);
+			nerrs += check_index(lfirst_oid(index), 0, 0, false,
+								 bitmap_idx, &cross_check);
 
 			/* evaluate the bitmap difference (if needed) */
-			if (bitmap_heap)
+			if (bitmap_heap && cross_check)
 			{
 				/* compare the bitmaps */
 				int ndiffs = bitmap_compare(bitmap_heap, bitmap_idx);
@@ -326,148 +328,48 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 
 /*
  * check the index, acquires AccessShareLock
- *
- * FIXME This shares an awful amount of code with check_index function, refactor.
- *
- * This is called only from check_table, so there is no reason to support of checking
- * only a part of the index.
  */
 static uint32
-check_index_oid(Oid	indexOid, item_bitmap * bitmap)
+check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
+			bool blockRangeGiven, item_bitmap *bitmap, bool *crossCheck)
 {
-	Relation	rel;       /* relation for the 'relname' */
-	char	   *raw_page;  /* raw data of the page */
-	Buffer		buf;       /* buffer the page is read into */
-	uint32      nerrs = 0; /* number of errors found */
-	BlockNumber blkno;     /* current block */
-	BlockNumber maxblock;  /* number of blocks of a table */
-	PageHeader 	header;    /* page header */
+	Relation	rel;		/* relation for the 'relname' */
+	char	   *raw_page;	/* raw data of the page */
+	Buffer		buf;		/* buffer the page is read into */
+	uint32      nerrs = 0;	/* number of errors found */
+	BlockNumber blkno;		/* current block */
+	PageHeader 	header;		/* page header */
+	int			lmode;		/* lock mode */
 	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
+	check_page_cb	check_page;
 
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pg_check functions"))));
 
-	/* FIXME maybe we need more strict lock here */
-	if (bitmap != NULL)
-		rel = index_open(indexOid, ShareRowExclusiveLock);
-	else
-		rel = index_open(indexOid, AccessShareLock);
+	/* when a bitmap is provided, use stricted lock mode */
+	lmode = (bitmap != NULL) ? ShareRowExclusiveLock : AccessShareLock;
 
-	/* Check that this relation has storage */
+	rel = index_open(indexOid, lmode);
+
+	elog(NOTICE, "checking index: %s", RelationGetRelationName(rel));
+
+	/* Check that this relation is an index */
 	if (rel->rd_rel->relkind != RELKIND_INDEX)
+	{
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("object \"%s\" is not an index",
 						RelationGetRelationName(rel))));
+	}
 
 	/*
-	 * We only know how to check b-tree indexes, so ignore other types.
-	 *
-	 * We don't throw an error in this case, as this may be called from
-	 * check_table (for all indexes). We don't want to terminate the
-	 * whole table check.
+	 * See if we have check methods for this access methods. If we find
+	 * no am-specific check methods, we'll still do at least the basic
+	 * checks of page format.
 	 */
-	if (rel->rd_rel->relam != BTREE_AM_OID)
-	{
-		ereport(WARNING,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("skipping non-btree index \"%s\"",
-						RelationGetRelationName(rel))));
-
-		relation_close(rel, AccessShareLock);
-		return 0;
-	}
-
-	elog(NOTICE, "checking index: %s", RelationGetRelationName(rel));
-
-	/* Initialize buffer to copy to */
-	raw_page = (char *) palloc(BLCKSZ);
-
-	strategy = GetAccessStrategy(BAS_BULKREAD);
-
-	/* Take a verbatim copies of the pages and check them */
-	maxblock = RelationGetNumberOfBlocks(rel);
-	for (blkno = 0; blkno < maxblock; blkno++)
-	{
-		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, strategy);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-
-		memcpy(raw_page, BufferGetPage(buf), BLCKSZ);
-
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		ReleaseBuffer(buf);
-
-		/* Call the 'check' routines - first just the header, then the contents. */
-
-		header = (PageHeader)raw_page;
-
-		nerrs += check_index_page(rel, header, raw_page, blkno);
-
-		/* if this is non-metapage, then check contents */
-		if (blkno > 0)
-		{
-			BTPageOpaque	opaque = BTPageGetOpaque(raw_page);
-
-			/*
-			 * XXX It probably does not make sense to try to cross-check
-			 * tuples if the page header is corrupted. So check what
-			 * check_index_page returns, and only proceed if there are
-			 * no errors detected.
-			 */
-			nerrs += check_index_tuples(rel, header, raw_page, blkno);
-
-			/*
-			 * If this is a leaf page (containing actual pointers to the
-			 * heap), then update the bitmap.
-			 */
-			if (bitmap && P_ISLEAF(opaque))
-				nerrs += bitmap_add_index_items(bitmap, header, raw_page, blkno);
-		}
-	}
-
-	FreeAccessStrategy(strategy);
-
-	if (bitmap != NULL)
-		relation_close(rel, ShareRowExclusiveLock);
-	else
-		relation_close(rel, AccessShareLock);
-
-	return nerrs;
-}
-
-/*
- * check the index, acquires AccessShareLock
- */
-static uint32
-check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
-			bool blockRangeGiven)
-{
-	Relation	rel;       /* relation for the 'relname' */
-	char	   *raw_page;  /* raw data of the page */
-	Buffer		buf;       /* buffer the page is read into */
-	uint32      nerrs = 0; /* number of errors found */
-	BlockNumber blkno;     /* current block */
-	PageHeader 	header;    /* page header */
-	BufferAccessStrategy strategy; /* bulk strategy to avoid polluting cache */
-
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to use pg_check functions"))));
-
-	/* FIXME A more strict lock might be more appropriate. */
-	rel = relation_open(indexOid, AccessShareLock);
-
-	/* Check that this relation is a b-tree index */
-	if ((rel->rd_rel->relkind != RELKIND_INDEX) ||
-		(rel->rd_rel->relam != BTREE_AM_OID)) {
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("object \"%s\" is not a b-tree index",
-						RelationGetRelationName(rel))));
-	}
+	check_page = lookup_check_method(rel->rd_rel->relam, crossCheck);
 
 	/* Initialize buffer to copy to */
 	raw_page = (char *) palloc(BLCKSZ);
@@ -497,23 +399,12 @@ check_index(Oid indexOid, BlockNumber blockFrom, BlockNumber blockTo,
 		 */
 		header = (PageHeader)raw_page;
 
-		nerrs += check_index_page(rel, header, raw_page, blkno);
-
-		if (blkno > 0)
-		{
-			/*
-			 * XXX It probably does not make sense to try to cross-check
-			 * tuples if the page header is corrupted. So check what
-			 * check_index_page returns, and only proceed if there are
-			 * no errors detected.
-			 */
-			nerrs += check_index_tuples(rel, header, raw_page, blkno);
-		}
+		nerrs += check_page(rel, header, blkno, raw_page, bitmap);
 	}
 
 	FreeAccessStrategy(strategy);
 
-	relation_close(rel, AccessShareLock);
+	relation_close(rel, lmode);
 
 	return nerrs;
 }

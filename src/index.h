@@ -4,11 +4,11 @@
 #include "postgres.h"
 #include "access/heapam.h"
 #include "heap.h"
+#include "item-bitmap.h"
 
-/* btree index checks */
-uint32 check_index_page(Relation rel, PageHeader header, char *buffer, BlockNumber block);
-uint32 check_index_tuples(Relation rel, PageHeader header, char *buffer, BlockNumber block);
-uint32 check_index_tuple(Relation rel, PageHeader header, BlockNumber block, int i, char *buffer);
-uint32 check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block, OffsetNumber offnum, char *buffer, int dlen);
+typedef uint32 (* check_page_cb)(Relation, PageHeader, BlockNumber,
+								 char *, item_bitmap *);
+
+check_page_cb lookup_check_method(Oid oid, bool *crosscheck);
 
 #endif

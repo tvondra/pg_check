@@ -106,4 +106,7 @@ uint64 bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b);
 /* Prints the info about the bitmap and the data as a series of 0/1. */
 void bitmap_print(item_bitmap * bitmap, BitmapFormat format);
 
+void bitmap_set(item_bitmap *bitmap, BlockNumber page, int item);
+bool bitmap_get(item_bitmap *bitmap, BlockNumber page, int item);
+
 #endif   /* HEAP_CHECK_H */

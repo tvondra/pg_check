@@ -19,9 +19,6 @@
 #define GetBitmapByte(p,o)	(GetBitmapIndex(p,o) / 8)
 #define GetBitmapBit(p,o)	(GetBitmapIndex(p,o) % 8)
 
-static void bitmap_set(item_bitmap *bitmap, BlockNumber page, int item);
-static bool bitmap_get(item_bitmap *bitmap, BlockNumber page, int item);
-
 static int count_digits(uint64 values[], BlockNumber n);
 static char * itoa(int value, char * str, int maxlen);
 static char * hex(const char * data, int n);
@@ -155,49 +152,8 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 	return nerrs;
 }
 
-/* checks index tuples on the page, one by one */
-int
-bitmap_add_index_items(item_bitmap * bitmap, PageHeader header,
-					   char *raw_page, BlockNumber page)
-{
-	/* tuple checks */
-	int				nerrs = 0;
-	int				ntuples = PageGetMaxOffsetNumber(raw_page);
-	BTPageOpaque	opaque = (BTPageOpaque) PageGetSpecialPointer(raw_page);
-	int				item;
-	int				start;
-
-	/* skip first item (high key), except for the right-most page */
-	start = (P_RIGHTMOST(opaque)) ? 0 : 1;
-
-	for (item = start; item < ntuples; item++)
-	{
-		IndexTuple		itup;
-		BlockNumber		block;
-		OffsetNumber	offset;
-		ItemId			lp = &header->pd_linp[item];
-
-		/* we only care about LP_NORMAL items, skip others */
-		if (lp->lp_flags != LP_NORMAL)
-			continue;
-
-		itup = (IndexTuple)(raw_page + lp->lp_off);
-
-		offset = ItemPointerGetOffsetNumber(&(itup->t_tid)) - 1;
-		block  = ItemPointerGetBlockNumber(&(itup->t_tid));
-
-		/* we should not have two index items pointing to the same tuple */
-		if (bitmap_get(bitmap, block, offset))
-			nerrs++;
-		else
-			bitmap_set(bitmap, block, offset);
-	}
-
-	return nerrs;
-}
-
 /* mark the (page,item) as occupied */
-static void
+void
 bitmap_set(item_bitmap *bitmap, BlockNumber page, int item)
 {
 	int byte = GetBitmapByte(page, item);
@@ -220,7 +176,7 @@ bitmap_set(item_bitmap *bitmap, BlockNumber page, int item)
 }
 
 /* check if the (page,item) is occupied */
-static bool
+bool
 bitmap_get(item_bitmap * bitmap, BlockNumber page, int item)
 {
 	int byte = GetBitmapByte(page, item);

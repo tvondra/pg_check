@@ -7,9 +7,77 @@
 
 #include "common.h"
 #include "index.h"
+#include "item-bitmap.h"
+
+#if (PG_VERSION_NUM >= 90600)
+#include "catalog/pg_am.h"
+#endif
+
 
 #define BlockNum(tuple) \
 (((tuple->t_tid.ip_blkid).bi_hi << 16) | ((uint16) (tuple->t_tid.ip_blkid).bi_lo))
+
+/* generic check */
+static uint32 generic_check_page(Relation rel, PageHeader header,
+					   BlockNumber block, char *raw_page,
+					   item_bitmap *bitmap);
+
+/* btree checks */
+static uint32 btree_check_page(Relation rel, PageHeader header,
+					   BlockNumber block, char *raw_page,
+					   item_bitmap *bitmap);
+static uint32 btree_check_tuples(Relation rel, PageHeader header,
+					   BlockNumber block, char *raw_page);
+static uint32 btree_check_tuple(Relation rel, PageHeader header,
+					   BlockNumber block, int i, char *raw_page);
+static uint32 btree_check_attributes(Relation rel, PageHeader header,
+					   BlockNumber block, OffsetNumber offnum,
+					   char *raw_page, int dlen);
+static uint32 btree_add_tuples(Relation rel, PageHeader header,
+					   BlockNumber block, char *raw_page,
+					   item_bitmap *bitmap);
+
+struct index_check_methods
+{
+	Oid					oid;
+	check_page_cb		check_page;
+	bool				crosscheck;
+};
+
+static struct index_check_methods methods[] = {
+	{
+		BTREE_AM_OID,
+		btree_check_page,
+		true
+	},
+	{
+		InvalidOid,
+		NULL,
+		false
+	}
+};
+
+check_page_cb
+lookup_check_method(Oid oid, bool *crosscheck)
+{
+	int i;
+
+	*crosscheck = false;
+
+	i = 0;
+	while (methods[i].oid != InvalidOid)
+	{
+		if (methods[i].oid == oid)
+		{
+			if (crosscheck)
+				*crosscheck = methods[i].crosscheck;
+
+			return methods[i].check_page;
+		}
+	}
+
+	return generic_check_page;
+}
 
 /* FIXME Check that the index is consistent with the table - target (block/item), etc. */
 /* FIXME Check that there are no index items pointing to the same heap tuple. */
@@ -19,11 +87,24 @@
 /* FIXME This does not check that the tree structure is valid, just individual pages. This might check that there are no cycles in the index, that all the pages are actually used in the tree. */
 /* FIXME Does not check (tid) referenced in the leaf-nodes, in the data section. */
 
+
 uint32
-check_index_page(Relation rel, PageHeader header, char *buffer, BlockNumber block)
+generic_check_page(Relation rel, PageHeader header, BlockNumber block,
+				   char *raw_page, item_bitmap *bitmap)
+{
+	/* check basic page header */
+	return check_page_header(header, block);
+}
+
+uint32
+btree_check_page(Relation rel, PageHeader header, BlockNumber block,
+				 char *raw_page, item_bitmap *bitmap)
 {
 	uint32 nerrs = 0;
 	BTPageOpaque opaque = NULL;
+
+	/* make sure we only ever call this for b-tree indexes */
+	Assert(rel->rd_rel->relam == BTREE_AM_OID);
 
 	/* check basic page header */
 	nerrs += check_page_header(header, block);
@@ -31,7 +112,7 @@ check_index_page(Relation rel, PageHeader header, char *buffer, BlockNumber bloc
 	/* (block==0) means it's a meta-page, otherwise it's a regular index-page */
 	if (block == BTREE_METAPAGE)
 	{
-		BTMetaPageData * mpdata = BTPageGetMeta(buffer);
+		BTMetaPageData * mpdata = BTPageGetMeta(raw_page);
 
 		ereport(DEBUG2,
 				(errmsg("[%d] is a meta-page [magic=%d, version=%d]",
@@ -55,61 +136,76 @@ check_index_page(Relation rel, PageHeader header, char *buffer, BlockNumber bloc
 
 		/* FIXME Check that the btm_root/btm_fastroot is between 1 and number of index blocks */
 		/* FIXME Check that the btm_level/btm_fastlevel is equal to the level fo the root block */
+
+		return nerrs;
 	}
-	else
+
+	/* non-metapage */
+	opaque = (BTPageOpaque)(raw_page + header->pd_special);
+
+	/* check there's enough space for index-relevant data */
+	if (header->pd_special > BLCKSZ - sizeof(BTPageOpaque))
 	{
-		opaque = (BTPageOpaque)(buffer + header->pd_special);
+		ereport(WARNING,
+				(errmsg("[%d] there's not enough special space for index data (%d > %d)",
+						block,
+						(int) sizeof(BTPageOpaque),
+						BLCKSZ - header->pd_special)));
+		nerrs++;
+	}
 
-		/* check there's enough space for index-relevant data */
-		if (header->pd_special > BLCKSZ - sizeof(BTPageOpaque))
+	/*
+	 * if the page is a leaf page, then level needs to be 0. Otherwise,
+	 * it should be > 0. Deleted pages don't have a level, the level
+	 * field is interleaved with an xid.
+	 */
+	if (!P_ISDELETED(opaque))
+	{
+		if (P_ISLEAF(opaque))
 		{
-			ereport(WARNING,
-					(errmsg("[%d] there's not enough special space for index data (%d > %d)",
-							block,
-							(int) sizeof(BTPageOpaque),
-							BLCKSZ - header->pd_special)));
-			nerrs++;
-		}
-
-		/*
-		 * if the page is a leaf page, then level needs to be 0. Otherwise,
-		 * it should be > 0. Deleted pages don't have a level, the level
-		 * field is interleaved with an xid.
-		 */
-		if (!P_ISDELETED(opaque))
-		{
-			if (P_ISLEAF(opaque))
+			if (opaque-> btpo.level != 0)
 			{
-				if (opaque-> btpo.level != 0)
-				{
-					ereport(WARNING,
-							(errmsg("[%d] is leaf page, but level %d is not zero",
-									block, opaque->btpo.level)));
-					nerrs++;
-				}
+				ereport(WARNING,
+						(errmsg("[%d] is leaf page, but level %d is not zero",
+								block, opaque->btpo.level)));
+				nerrs++;
 			}
-			else
+		}
+		else
+		{
+			if (opaque-> btpo.level == 0)
 			{
-				if (opaque-> btpo.level == 0)
-				{
-					ereport(WARNING,
-							(errmsg("[%d] is a non-leaf page, but level is zero",
-									block)));
-					nerrs++;
-				}
+				ereport(WARNING,
+						(errmsg("[%d] is a non-leaf page, but level is zero",
+								block)));
+				nerrs++;
 			}
 		}
 	}
+
+	/*
+	 * XXX It probably does not make sense to try to cross-check tuples if
+	 * the page header is corrupted. So check what check_index_page returns,
+	 * and only proceed if there are no errors detected.
+	 */
+	nerrs += btree_check_tuples(rel, header, block, raw_page);
+
+	/*
+	* If this is a leaf page (containing actual pointers to the heap), then
+	* update the bitmap.
+	*/
+	if (bitmap && P_ISLEAF(opaque))
+		nerrs += btree_add_tuples(rel, header, block, raw_page, bitmap);
 
 	return nerrs;
 }
 
 /* checks index tuples on the page, one by one */
 uint32
-check_index_tuples(Relation rel, PageHeader header, char *buffer, BlockNumber block)
+btree_check_tuples(Relation rel, PageHeader header, BlockNumber block, char *raw_page)
 {
 	/* tuple checks */
-	int ntuples = PageGetMaxOffsetNumber(buffer);
+	int ntuples = PageGetMaxOffsetNumber(raw_page);
 	int i;
 	uint32 nerrs = 0;
 
@@ -123,7 +219,7 @@ check_index_tuples(Relation rel, PageHeader header, char *buffer, BlockNumber bl
 
 	/* FIXME this should check lp_flags, just as the heap check */
 	for (i = 0; i < ntuples; i++)
-		nerrs += check_index_tuple(rel, header, block, i, buffer);
+		nerrs += btree_check_tuple(rel, header, block, i, raw_page);
 
 	if (nerrs > 0)
 		ereport(WARNING,
@@ -136,8 +232,8 @@ check_index_tuples(Relation rel, PageHeader header, char *buffer, BlockNumber bl
 /* checks that the tuples do not overlap and then the individual attributes */
 /* FIXME This should do exactly the same checks of lp_flags as in heap.c */
 uint32
-check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
-				  int i, char *buffer)
+btree_check_tuple(Relation rel, PageHeader header, BlockNumber block,
+				  int i, char *raw_page)
 {
 	int dlen;
 	uint32 nerrs = 0;
@@ -169,7 +265,7 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 
 	/* OK, so this is LP_NORMAL index item, and we can inspect it. */
 
-	itup = (IndexTuple)(buffer + lp->lp_off);
+	itup = (IndexTuple)(raw_page + lp->lp_off);
 
 	ereport(DEBUG2,
 			(errmsg("[%d:%d] off=%d len=%d tid=(%d,%d)", block, (i+1),
@@ -227,16 +323,16 @@ check_index_tuple(Relation rel, PageHeader header, BlockNumber block,
 	dlen = IndexTupleSize(itup) - IndexInfoFindDataOffset(itup->t_info);
 
 	/* check attributes only for tuples with (lp_flags==LP_NORMAL) */
-	nerrs += check_index_tuple_attributes(rel, header, block, i + 1,
-										  buffer, dlen);
+	nerrs += btree_check_attributes(rel, header, block, i + 1,
+									raw_page, dlen);
 
 	return nerrs;
 }
 
 /* checks the individual attributes of the tuple */
-uint32
-check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
-							 OffsetNumber offnum, char *buffer, int dlen)
+static uint32
+btree_check_attributes(Relation rel, PageHeader header, BlockNumber block,
+					   OffsetNumber offnum, char *raw_page, int dlen)
 {
 	IndexTuple tuple;
 	uint32 nerrs = 0;
@@ -252,10 +348,10 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 
 	/* get the index tuple and info about the page */
 	linp = &header->pd_linp[offnum - 1];
-	tuple = (IndexTuple)(buffer + linp->lp_off);
-	opaque = (BTPageOpaque)(buffer + header->pd_special);
+	tuple = (IndexTuple)(raw_page + linp->lp_off);
+	opaque = (BTPageOpaque)(raw_page + header->pd_special);
 
-	/* current attribute offset - always starts at (buffer + off) */
+	/* current attribute offset - always starts at (raw_page + off) */
 	off = linp->lp_off + IndexInfoFindDataOffset(tuple->t_info);
 
 	ereport(DEBUG3,
@@ -263,7 +359,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 					RelationGetNumberOfAttributes(rel))));
 
 	/* XXX: MAXALIGN */
-	bitmap = (bits8*)(buffer + linp->lp_off + sizeof(IndexTupleData));
+	bitmap = (bits8*)(raw_page + linp->lp_off + sizeof(IndexTupleData));
 
 	/*
 	 * For non-leaf pages, the first data tuple may or may not actually have
@@ -306,7 +402,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 		}
 
 		/* fix the alignment (see src/include/access/tupmacs.h) */
-		off = att_align_pointer(off, attr->attalign, attr->attlen, buffer+off);
+		off = att_align_pointer(off, attr->attalign, attr->attlen, raw_page+off);
 
 		if (is_varlena)
 		{
@@ -315,7 +411,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 			 * not have the same issue as check_heap_tuple_attributes.
 			 */
 
-			len = VARSIZE_ANY(buffer + off);
+			len = VARSIZE_ANY(raw_page + off);
 
 			if (len < 0)
 			{
@@ -326,15 +422,15 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 				break;
 			}
 
-			if (VARATT_IS_COMPRESSED(buffer + off))
+			if (VARATT_IS_COMPRESSED(raw_page + off))
 			{
 				/* the raw length should be less than 1G (and positive) */
-				if ((VARRAWSIZE_4B_C(buffer + off) < 0) ||
-					(VARRAWSIZE_4B_C(buffer + off) > 1024*1024))
+				if ((VARRAWSIZE_4B_C(raw_page + off) < 0) ||
+					(VARRAWSIZE_4B_C(raw_page + off) > 1024*1024))
 				{
 					ereport(WARNING,
 							(errmsg("[%d:%d]  attribute '%s' has invalid length %d (should be between 0 and 1G)",
-									block, offnum, attr->attname.data, VARRAWSIZE_4B_C(buffer + off))));
+									block, offnum, attr->attname.data, VARRAWSIZE_4B_C(raw_page + off))));
 					++nerrs;
 					/* no break here, this does not break the page structure - we may check the other attributes */
 				}
@@ -347,7 +443,7 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 		{
 			/* get the C-string length (at most to the end of tuple), +1 as it does not include '\0' at the end */
 			/* if the string is not properly terminated, then this returns 'remaining space + 1' so it's detected */
-			len = strnlen(buffer + off, linp->lp_off + len + linp->lp_len - off) + 1;
+			len = strnlen(raw_page + off, linp->lp_off + len + linp->lp_len - off) + 1;
 		}
 		else
 			/* attributes with fixed length */
@@ -400,6 +496,47 @@ check_index_tuple_attributes(Relation rel, PageHeader header, BlockNumber block,
 				(errmsg("[%d:%d] the last attribute ends at %d but the tuple ends at %d",
 						block, offnum, off, linp->lp_off + linp->lp_len)));
 		++nerrs;
+	}
+
+	return nerrs;
+}
+
+/* checks index tuples on the page, one by one */
+static uint32
+btree_add_tuples(Relation rel, PageHeader header, BlockNumber block,
+				 char *raw_page, item_bitmap * bitmap)
+{
+	/* tuple checks */
+	int				nerrs = 0;
+	int				ntuples = PageGetMaxOffsetNumber(raw_page);
+	BTPageOpaque	opaque = (BTPageOpaque) PageGetSpecialPointer(raw_page);
+	int				item;
+	int				start;
+
+	/* skip first item (high key), except for the right-most page */
+	start = (P_RIGHTMOST(opaque)) ? 0 : 1;
+
+	for (item = start; item < ntuples; item++)
+	{
+		IndexTuple		itup;
+		BlockNumber		block;
+		OffsetNumber	offset;
+		ItemId			lp = &header->pd_linp[item];
+
+		/* we only care about LP_NORMAL items, skip others */
+		if (lp->lp_flags != LP_NORMAL)
+			continue;
+
+		itup = (IndexTuple)(raw_page + lp->lp_off);
+
+		offset = ItemPointerGetOffsetNumber(&(itup->t_tid)) - 1;
+		block  = ItemPointerGetBlockNumber(&(itup->t_tid));
+
+		/* we should not have two index items pointing to the same tuple */
+		if (bitmap_get(bitmap, block, offset))
+			nerrs++;
+		else
+			bitmap_set(bitmap, block, offset);
 	}
 
 	return nerrs;
