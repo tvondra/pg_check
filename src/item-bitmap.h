@@ -19,6 +19,7 @@ typedef enum
 typedef struct item_bitmap
 {
 	/* current number of tracked pages */
+	BlockNumber startpage;
 	BlockNumber npages;
 
 	Size		nbytes;			/* used bytes */
@@ -36,6 +37,7 @@ typedef struct item_bitmap
 
 /* Allocates new item bitmap, sized for n pages.
  *
+ * - startpage : first page to scan (0 by default)
  * - npages : number of pages of the relation (needs to be known in advance)
  *
  * Prepares space for at least one item on each page, rounded to multiples
@@ -45,7 +47,7 @@ typedef struct item_bitmap
  *
  * Returns the allocated bitmap.
  */
-item_bitmap *bitmap_init(BlockNumber npages);
+item_bitmap *bitmap_init(BlockNumber startpage, BlockNumber npages);
 
 /* Copies the item bitmap (except the actual bitmap data, keeps zeroes).
  *

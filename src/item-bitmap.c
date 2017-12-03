@@ -15,9 +15,11 @@
  */
 #define BITMAP_BYTES_PER_PAGE	((Size)(MaxHeapTuplesPerPage + 7) / 8)
 
-#define GetBitmapIndex(p,o)	((p) * MaxHeapTuplesPerPage + (o))
-#define GetBitmapByte(p,o)	(GetBitmapIndex(p,o) / 8)
-#define GetBitmapBit(p,o)	(GetBitmapIndex(p,o) % 8)
+#define GetBitmapIndex(b,p,o)	\
+	((p - (b)->startpage) * MaxHeapTuplesPerPage + (o))
+
+#define GetBitmapByte(b,p,o)	(GetBitmapIndex(b,p,o) / 8)
+#define GetBitmapBit(b,p,o)		(GetBitmapIndex(b,p,o) % 8)
 
 static int	count_digits(uint64 values[], BlockNumber n);
 static char *itoa(int value, char *str, int maxlen);
@@ -27,7 +29,7 @@ static char *base64(const char *data, int n);
 
 /* init the bitmap (allocate, set default values) */
 item_bitmap *
-bitmap_init(BlockNumber npages)
+bitmap_init(BlockNumber startpage, BlockNumber npages)
 {
 	item_bitmap *bitmap;
 
@@ -36,6 +38,7 @@ bitmap_init(BlockNumber npages)
 
 	bitmap = (item_bitmap *) palloc0(sizeof(item_bitmap));
 
+	bitmap->startpage = startpage;
 	bitmap->npages = npages;
 	bitmap->pages = (uint64 *) palloc0(sizeof(uint64) * npages);
 
@@ -56,6 +59,7 @@ bitmap_copy(item_bitmap * src)
 
 	bitmap = (item_bitmap *) palloc0(sizeof(item_bitmap));
 
+	bitmap->startpage = src->startpage;
 	bitmap->npages = src->npages;
 	bitmap->nbytes = src->nbytes;
 
@@ -97,6 +101,11 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 	int			item;
 	Page		p = (Page) raw_page;
 	bool		add[MaxHeapTuplesPerPage];
+
+	/* should we ignore this page entirely? */
+	if ((page < bitmap->startpage) ||
+		(page >= bitmap->startpage + bitmap->npages))
+		return nerrs;
 
 	/* assume we're adding all items from this heap page */
 	memset(add, 1, sizeof(add));
@@ -156,8 +165,13 @@ bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 void
 bitmap_set(item_bitmap * bitmap, BlockNumber page, int item)
 {
-	int			byte = GetBitmapByte(page, item);
-	int			bit = GetBitmapBit(page, item);
+	int			byte = GetBitmapByte(bitmap, page, item);
+	int			bit = GetBitmapBit(bitmap, page, item);
+
+	/* ignore pages outside the range */
+	if ((page < bitmap->startpage) ||
+		(page >= bitmap->startpage + bitmap->npages))
+		return;
 
 	if (page >= bitmap->npages)
 	{
@@ -179,8 +193,13 @@ bitmap_set(item_bitmap * bitmap, BlockNumber page, int item)
 bool
 bitmap_get(item_bitmap * bitmap, BlockNumber page, int item)
 {
-	int			byte = GetBitmapByte(page, item);
-	int			bit = GetBitmapBit(page, item);
+	int			byte = GetBitmapByte(bitmap, page, item);
+	int			bit = GetBitmapBit(bitmap, page, item);
+
+	/* ignore pages outside the range */
+	if ((page < bitmap->startpage) ||
+		(page >= bitmap->startpage + bitmap->npages))
+		return false;
 
 	if (page >= bitmap->npages)
 	{
@@ -227,10 +246,11 @@ bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b)
 
 	Assert(bitmap_a->nbytes == bitmap_b->nbytes);
 	Assert(bitmap_a->npages == bitmap_b->npages);
+	Assert(bitmap_a->startpage == bitmap_b->startpage);
 
 	/* the actual check, compares the bits one by one */
 	ndiff = 0;
-	for (block = 0; block < bitmap_a->npages; block++)
+	for (block = bitmap_a->startpage; block < bitmap_a->startpage + bitmap_a->npages; block++)
 	{
 		for (offset = 0; offset < MaxHeapTuplesPerPage; offset++)
 		{

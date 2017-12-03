@@ -54,10 +54,7 @@ bool		pgcheck_debug;
 int			pgcheck_bitmap_format = BITMAP_BINARY;
 
 Datum		pg_check_table(PG_FUNCTION_ARGS);
-Datum		pg_check_table_pages(PG_FUNCTION_ARGS);
-
 Datum		pg_check_index(PG_FUNCTION_ARGS);
-Datum		pg_check_index_pages(PG_FUNCTION_ARGS);
 
 static uint32 check_table(Oid relid,
 			bool checkIndexes, bool crossCheckIndexes,
@@ -80,43 +77,50 @@ PG_FUNCTION_INFO_V1(pg_check_table);
 Datum
 pg_check_table(PG_FUNCTION_ARGS)
 {
+	uint32		nerrs;
 	Oid			relid = PG_GETARG_OID(0);
 	bool		checkIndexes = PG_GETARG_BOOL(1);
 	bool		crossCheckIndexes = PG_GETARG_BOOL(2);
-	uint32		nerrs;
+	int64		blockFrom;		/* starting block */
+	int64		blockTo;		/* end block */
+	bool		blockRange = false; /* block range specified */
 
-	nerrs = check_table(relid, checkIndexes, crossCheckIndexes, 0, 0, false);
+	/* we only allow either both block_start/block_end, or neither */
+	if (PG_ARGISNULL(3) && PG_ARGISNULL(4))
+	{
+		blockFrom = 0;
+		blockTo = 0;
+	}
+	else if ((!PG_ARGISNULL(3)) && (!PG_ARGISNULL(4)))
+	{
+		blockFrom = PG_GETARG_INT64(3);
+		blockTo = PG_GETARG_INT64(4);
+		blockRange = true;
+	}
+	else
+		elog(ERROR, "only one of block_start/block_end specified");
 
-	PG_RETURN_INT32(nerrs);
-}
+	/* check block numbers make sense (in uint32 range etc.) */
 
-/*
- * pg_check_table_pages
- *
- * Checks the selected range of pages of a table (but not indexes), returns
- * number of issues found.
- */
-PG_FUNCTION_INFO_V1(pg_check_table_pages);
+	if ((blockFrom < 0) || (blockFrom > PG_UINT32_MAX))
+		elog(ERROR, "invalid block_start value %ld (allowed [0,%u])",
+			 blockFrom, PG_UINT32_MAX);
 
-Datum
-pg_check_table_pages(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		blkfrom = PG_GETARG_INT64(1);
-	int64		blkto = PG_GETARG_INT64(2);
-	uint32		nerrs;
+	if ((blockTo < 0) || (blockTo > PG_UINT32_MAX))
+		elog(ERROR, "invalid block_end value %ld (allowed [0,%u])",
+			 blockTo, PG_UINT32_MAX);
 
-	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
-		ereport(ERROR,
-				(errmsg("invalid starting block number")));
+	if (blockTo < blockFrom)
+		elog(ERROR, "block_start (%ld) greater than block_end (%ld)",
+			 blockFrom, blockTo);
 
-	if (blkto < 0 || blkto > MaxBlockNumber)
-		ereport(ERROR,
-				(errmsg("invalid ending block number")));
+	/* check that cross-check is specified only when checking indexes */
+	if (crossCheckIndexes && (!checkIndexes))
+		elog(ERROR, "index cross-check can only be requested with index check");
 
-	nerrs = check_table(relid, false, false,
-						(BlockNumber) blkfrom, (BlockNumber) blkto,
-						true);
+	nerrs = check_table(relid, checkIndexes, crossCheckIndexes,
+						(BlockNumber) blockFrom, (BlockNumber) blockTo,
+						blockRange);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -124,7 +128,7 @@ pg_check_table_pages(PG_FUNCTION_ARGS)
 /*
  * pg_check_index
  *
- * Checks the selected index, returns number of warnings (issues found).
+ * Checks a single index, returns number of warnings (issues found).
  */
 PG_FUNCTION_INFO_V1(pg_check_index);
 
@@ -133,36 +137,42 @@ pg_check_index(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	uint32		nerrs;
+	int64		blockFrom;		/* starting block */
+	int64		blockTo;		/* end block */
+	bool		blockRange = false; /* block range specified */
 
-	nerrs = check_index(relid, 0, 0, false, NULL, NULL);
+	/* we only allow either both block_start/block_end, or neither */
+	if (PG_ARGISNULL(3) && PG_ARGISNULL(4))
+	{
+		blockFrom = 0;
+		blockTo = 0;
+	}
+	else if ((!PG_ARGISNULL(1)) && (!PG_ARGISNULL(2)))
+	{
+		blockFrom = PG_GETARG_INT64(1);
+		blockTo = PG_GETARG_INT64(1);
+		blockRange = true;
+	}
+	else
+		elog(ERROR, "only one of block_start/block_end specified");
 
-	PG_RETURN_INT32(nerrs);
-}
+	/* check block numbers make sense (in uint32 range etc.) */
 
-/*
- * pg_check_index_pages
- *
- * Checks a single page, returns number of warnings (issues found).
- */
-PG_FUNCTION_INFO_V1(pg_check_index_pages);
+	if ((blockFrom < 0) || (blockFrom > MaxBlockNumber))
+		elog(ERROR, "invalid block_start value %ld (allowed [0,%u])",
+			 blockFrom, MaxBlockNumber);
 
-Datum
-pg_check_index_pages(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	BlockNumber blkfrom = (BlockNumber) PG_GETARG_INT64(1);
-	BlockNumber blkto = (BlockNumber) PG_GETARG_INT64(2);
-	uint32		nerrs;
+	if ((blockTo < 0) || (blockTo > MaxBlockNumber))
+		elog(ERROR, "invalid block_end value %ld (allowed [0,%u])",
+			 blockTo, MaxBlockNumber);
 
-	if (blkfrom < 0 || blkfrom > MaxBlockNumber)
-		ereport(ERROR,
-				(errmsg("invalid starting block number")));
+	if (blockTo < blockFrom)
+		elog(ERROR, "block_start (%ld) greater than block_end (%ld)",
+			 blockFrom, blockTo);
 
-	if (blkto < 0 || blkto > MaxBlockNumber)
-		ereport(ERROR,
-				(errmsg("invalid ending block number")));
-
-	nerrs = check_index(relid, blkfrom, blkto, true, NULL, NULL);
+	nerrs = check_index(relid,
+						(BlockNumber) blockFrom, (BlockNumber) blockTo,
+						blockRange, NULL, NULL);
 
 	PG_RETURN_INT32(nerrs);
 }
@@ -221,11 +231,11 @@ check_table(Oid relid, bool checkIndexes, bool crossCheckIndexes,
 	{
 		blockFrom = 0;
 		blockTo = RelationGetNumberOfBlocks(rel);
-
-		/* build the bitmap only when we need to cross-check */
-		if (crossCheckIndexes)
-			bitmap_heap = bitmap_init(blockTo);
 	}
+
+	/* build the bitmap only when we need to do the cross-check */
+	if (crossCheckIndexes)
+		bitmap_heap = bitmap_init(blockFrom, blockTo);
 
 	strategy = GetAccessStrategy(BAS_BULKREAD);
 
