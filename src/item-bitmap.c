@@ -4,16 +4,25 @@
 
 #if (PG_VERSION_NUM >= 90300)
 #include <math.h>
+#include "access/nbtree.h"
 #include "access/htup_details.h"
 #endif
 
-/* allocate the memory in 1kB chunks - this needs to be large enough
- * to hold items for one page (8k ~ 290 bits, ie 32k ~ 1200 bits, so
- * this needs to be at least 150B)
+/*
+ * The bitmap is allocated as one chunk of memory, assuming space for
+ * MaxHeapTuplesPerPage items on each page. That means about 40B for
+ * 8kB pages and 150B for 32kB pages.
  */
-#define PALLOC_CHUNK 1024
+#define BITMAP_BYTES_PER_PAGE	((Size)(MaxHeapTuplesPerPage + 7) / 8)
 
-static int count_digits(int values[], int n);
+#define GetBitmapIndex(p,o)	((p) * MaxHeapTuplesPerPage + (o))
+#define GetBitmapByte(p,o)	(GetBitmapIndex(p,o) / 8)
+#define GetBitmapBit(p,o)	(GetBitmapIndex(p,o) % 8)
+
+static void bitmap_set(item_bitmap *bitmap, BlockNumber page, int item);
+static bool bitmap_get(item_bitmap *bitmap, BlockNumber page, int item);
+
+static int count_digits(uint64 values[], BlockNumber n);
 static char * itoa(int value, char * str, int maxlen);
 static char * hex(const char * data, int n);
 static char * binary(const char * data, int n);
@@ -28,18 +37,13 @@ bitmap_init(BlockNumber npages)
 	/* sanity check */
 	Assert(npages >= 0);
 
-	bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
-
-	memset(bitmap, 0, sizeof(item_bitmap));
+	bitmap = (item_bitmap *) palloc0(sizeof(item_bitmap));
 
 	bitmap->npages = npages;
-	bitmap->pages = (int*)palloc(sizeof(int)*npages);
+	bitmap->pages = (uint64 *) palloc0(sizeof(uint64) * npages);
 
-	bitmap->nbytes = 0;
-	bitmap->maxBytes = PALLOC_CHUNK * (npages / PALLOC_CHUNK / 8 + 1);
-	bitmap->data = (char*)palloc(bitmap->maxBytes);
-
-	memset(bitmap->data, 0, bitmap->maxBytes);
+	bitmap->nbytes = npages * BITMAP_BYTES_PER_PAGE;
+	bitmap->data = (char *) palloc0(bitmap->nbytes);
 
 	return bitmap;
 }
@@ -53,18 +57,16 @@ bitmap_copy(item_bitmap * src)
 	/* sanity check */
 	Assert(src != NULL);
 
-	bitmap = (item_bitmap*)palloc(sizeof(item_bitmap));
+	bitmap = (item_bitmap *) palloc0(sizeof(item_bitmap));
 
 	bitmap->npages = src->npages;
-
 	bitmap->nbytes = src->nbytes;
-	bitmap->maxBytes = src->maxBytes;
 
-	bitmap->pages = (int*)palloc(sizeof(int)*src->npages);
-	memcpy(bitmap->pages, src->pages, sizeof(int)*src->npages);
+	bitmap->pages = (uint64 *) palloc(sizeof(uint64) * src->npages);
+	memcpy(bitmap->pages, src->pages, sizeof(uint64) * src->npages);
 
-	bitmap->data = (char*)palloc(src->maxBytes);
-	memset(bitmap->data, 0, src->maxBytes);
+	bitmap->data = (char *) palloc(src->nbytes);
+	memset(bitmap->data, 0, src->nbytes);
 
 	return bitmap;
 }
@@ -73,7 +75,7 @@ bitmap_copy(item_bitmap * src)
 void
 bitmap_reset(item_bitmap* bitmap)
 {
-	memset(bitmap->data, 0, bitmap->maxBytes);
+	memset(bitmap->data, 0, bitmap->nbytes);
 }
 
 /* free the allocated resources */
@@ -87,82 +89,66 @@ bitmap_free(item_bitmap* bitmap)
 	pfree(bitmap);
 }
 
-/* needs to be called for pages 0,1,2,3,...npages (not randomly) */
-/* extends the bitmap to handle another page */
-void
-bitmap_add_page(item_bitmap * bitmap, BlockNumber page, int items)
-{
-	/* sanity checks */
-	Assert(page >= 0);
-	Assert(page < bitmap->npages);
-	Assert(items >= 0);
-	Assert(items <= MaxHeapTuplesPerPage);
-
-	bitmap->pages[page] = (page == 0) ? items : (items + bitmap->pages[page-1]);
-
-	/* if needed more bytes than already allocated, extend the bitmap */
-	bitmap->nbytes = ((bitmap->pages[page] + 7) / 8);
-	if (bitmap->nbytes > bitmap->maxBytes)
-	{
-		/* keep so that we can zero the new chunk */
-		int len = bitmap->maxBytes;
-		bitmap->maxBytes += PALLOC_CHUNK;
-		bitmap->data = (char*)repalloc(bitmap->data, bitmap->maxBytes);
-		memset(bitmap->data + len, 0, PALLOC_CHUNK);
-	}
-}
-
 /* update the bitmap with all items from a page (tracks number of items) */
 int
 bitmap_add_heap_items(item_bitmap * bitmap, PageHeader header,
 					  char *raw_page, BlockNumber page)
 {
 	/* tuple checks */
-	int nerrs = 0;
-	int ntuples = PageGetMaxOffsetNumber(raw_page);
-	int item;
+	int		nerrs = 0;
+	int		ntuples = PageGetMaxOffsetNumber(raw_page);
+	int		item;
+	Page	p = (Page)raw_page;
+	bool	add[MaxHeapTuplesPerPage];
 
-	bitmap_add_page(bitmap, page, ntuples);
+	/* assume we're adding all items from this heap page */
+	memset(add, 1, sizeof(add));
 
 	/*
-	 * By default set all LP_REDIRECT / LP_NORMAL items to '1' (we'll remove
-	 * the HOT chains in the second pass)
+	 * Walk and remove all LP_UNUSED pointers, and LP_REDIRECT targets.
 	 *
-	 * FIXME what if there is a HOT chain and then an index is created?.
+	 * XXX Do we need to do something about LP_DEAD rows here? At this
+	 * point we keep them in the bitmap.
 	 */
 	for (item = 0; item < ntuples; item++)
 	{
-		if (ItemIdIsUsed(&header->pd_linp[item]))
+		ItemId	lp = &header->pd_linp[item];
+
+		if (lp->lp_flags == LP_UNUSED)
+			add[item] = false;
+
+		if (lp->lp_flags == LP_REDIRECT)
+			add[lp->lp_off - 1] = false;
+	}
+
+	/*
+	 * Deal with HOT chains. For every LP_NORMAL, and LP_DEAD pointer with
+	 * storage (i.e. lp_len>0), see if the tuple is HOT-updated (i.e. if it
+	 * has HEAP_HOT_UPDATED set). If yes, remove it from the bitmap.
+	 */
+	for (item = 0; item < ntuples; item++)
+	{
+		ItemId	lp = &header->pd_linp[item];
+
+		if ((lp->lp_flags == LP_NORMAL) ||
+			((lp->lp_flags == LP_DEAD) && (lp->lp_len > 0)))
 		{
-			if (! bitmap_set_item(bitmap, page, item, true))
-				nerrs++;
+			HeapTupleHeader htup;
+
+			htup = (HeapTupleHeader) PageGetItem(p, lp);
+
+			if (HeapTupleHeaderIsHeapOnly(htup))
+				add[item] = false;
 		}
 	}
 
-	/* second pass - remove the HOT chains */
 	for (item = 0; item < ntuples; item++)
 	{
-		Page p;
-		HeapTupleHeader htup;
-
-		p = (Page)raw_page;
-		htup = (HeapTupleHeader) PageGetItem(p, &header->pd_linp[item]);
-
-		if (HeapTupleHeaderIsHeapOnly(htup))
+		if (add[item])
 		{
-			/*
-			 * Walk only if not walked this HOT chain yet (skip the first
-			 * item in the chain).
-			 */
-			if (bitmap_get_item(bitmap, page, item))
-			{
-				/*
-				 * FIXME this is incorrect, IMHO - the chain might be longer
-				 * and the items may be processed out of order
-				 */
-				if (! bitmap_set_item(bitmap, page, item, false))
-					nerrs++;
-			}
+			/* increment number of items tracked on this page */
+			bitmap->pages[page]++;
+			bitmap_set(bitmap, page, item);
 		}
 	}
 
@@ -175,83 +161,70 @@ bitmap_add_index_items(item_bitmap * bitmap, PageHeader header,
 					   char *raw_page, BlockNumber page)
 {
 	/* tuple checks */
-	int nerrs = 0;
-	int ntuples = PageGetMaxOffsetNumber(raw_page);
-	int item;
+	int				nerrs = 0;
+	int				ntuples = PageGetMaxOffsetNumber(raw_page);
+	BTPageOpaque	opaque = (BTPageOpaque) PageGetSpecialPointer(raw_page);
+	int				item;
+	int				start;
 
-	for (item = 0; item < ntuples; item++)
+	/* skip first item (high key), except for the right-most page */
+	start = (P_RIGHTMOST(opaque)) ? 0 : 1;
+
+	for (item = start; item < ntuples; item++)
 	{
 		IndexTuple		itup;
-		BlockNumber		blocknum;
+		BlockNumber		block;
 		OffsetNumber	offset;
+		ItemId			lp = &header->pd_linp[item];
 
-		itup = (IndexTuple)(raw_page + header->pd_linp[item].lp_off);
+		/* we only care about LP_NORMAL items, skip others */
+		if (lp->lp_flags != LP_NORMAL)
+			continue;
 
-		offset = (itup->t_tid.ip_posid-1);
-		blocknum = BlockIdGetBlockNumber(&(itup->t_tid.ip_blkid));
+		itup = (IndexTuple)(raw_page + lp->lp_off);
 
-		if (! bitmap_set_item(bitmap, blocknum, offset, true))
+		offset = ItemPointerGetOffsetNumber(&(itup->t_tid)) - 1;
+		block  = ItemPointerGetBlockNumber(&(itup->t_tid));
+
+		/* we should not have two index items pointing to the same tuple */
+		if (bitmap_get(bitmap, block, offset))
 			nerrs++;
+		else
+			bitmap_set(bitmap, block, offset);
 	}
 
 	return nerrs;
 }
 
 /* mark the (page,item) as occupied */
-bool
-bitmap_set_item(item_bitmap *bitmap, BlockNumber page,
-				int item, bool state)
+static void
+bitmap_set(item_bitmap *bitmap, BlockNumber page, int item)
 {
-	int byteIdx = (GetBitmapIndex(bitmap, page, item)) / 8;
-	int bitIdx  = (GetBitmapIndex(bitmap, page, item)) % 8;
+	int byte = GetBitmapByte(page, item);
+	int bit  = GetBitmapBit(page, item);
 
 	if (page >= bitmap->npages)
 	{
 		elog(WARNING, "invalid page %d (max page %d)", page, bitmap->npages-1);
-		return false;
+		return;
 	}
 
-	if (byteIdx > bitmap->nbytes)
+	if (byte > bitmap->nbytes)
 	{
-		elog(WARNING, "invalid byte %d (max byte %zu)", byteIdx, bitmap->nbytes);
-		return false;
+		elog(WARNING, "invalid byte %d (max byte %zu)", byte, bitmap->nbytes);
+		return;
 	}
 
-	if (item >= bitmap->pages[page])
-	{
-		elog(WARNING, "item %d out of range, page has only %d items",
-			 item, bitmap->pages[page]);
-		return false;
-	}
-
-	/*
-	 * FIXME Check whether the item is aleady set or not (and return false
-	 * if it is, as we should only ever set it once).
-	 *
-	 * FIXME For indexes we should also check that we do not overflow to the
-	 * next page (we already know the maximum offset).
-	 */
-
-	if (state)
-	{
-		/* set the bit (OR) */
-		bitmap->data[byteIdx] |= (1 << bitIdx);
-	}
-	else
-	{
-		/* remove the bit (XOR) */
-		bitmap->data[byteIdx] &= ~(1 << bitIdx);
-	}
-
-	return true;
+	/* set the bit (OR) */
+	bitmap->data[byte] |= (0x01 << bit);
 }
 
 /* check if the (page,item) is occupied */
-bool
-bitmap_get_item(item_bitmap * bitmap, BlockNumber page, int item)
+static bool
+bitmap_get(item_bitmap * bitmap, BlockNumber page, int item)
 {
-	int byteIdx = (GetBitmapIndex(bitmap, page, item)) / 8;
-	int bitIdx  = (GetBitmapIndex(bitmap, page, item)) % 8;
+	int byte = GetBitmapByte(page, item);
+	int bit  = GetBitmapBit(page, item);
 
 	if (page >= bitmap->npages)
 	{
@@ -259,20 +232,13 @@ bitmap_get_item(item_bitmap * bitmap, BlockNumber page, int item)
 		return false;
 	}
 
-	if (byteIdx > bitmap->nbytes)
+	if (byte > bitmap->nbytes)
 	{
-		elog(WARNING, "invalid byte %d (max byte %zu)", byteIdx, bitmap->nbytes);
+		elog(WARNING, "invalid byte %d (max byte %zu)", byte, bitmap->nbytes);
 		return false;
 	}
 
-	if (item >= bitmap->pages[page])
-	{
-		elog(WARNING, "item %d out of range, page has only %d items",
-			 item, bitmap->pages[page]);
-		return false;
-	}
-
-	return (bitmap->data[byteIdx] && (1 << bitIdx));
+	return (bitmap->data[byte] & (0x01 << bit));
 }
 
 /* counts bits set to 1 in the bitmap */
@@ -299,51 +265,28 @@ bitmap_count(item_bitmap * bitmap)
 uint64
 bitmap_compare(item_bitmap * bitmap_a, item_bitmap * bitmap_b)
 {
-	Size i;
-	int j;
-	uint64 ndiff = 0;
-	char diff = 0;
+	BlockNumber		block;
+	OffsetNumber	offset;
+	uint64		ndiff;
 
-	/*
-	 * compare number of pages and total items
-	 *
-	 * FIXME this rather a sanity check, because these values are copied
-	 * by bitmap_prealloc. Also, maybe we should compare the common part
-	 * of the bitmaps (and count the missing part as mismatch).
-	 */
-	if (bitmap_a->npages != bitmap_b->npages)
-	{
-		elog(WARNING, "bitmaps do not track the same number of pages (%d != %d)",
-			 bitmap_a->npages, bitmap_b->npages);
-
-		return MAX(bitmap_a->pages[bitmap_a->npages-1],
-				   bitmap_b->pages[bitmap_b->npages-1]);
-
-	}
-
-	/* compare number of items tracked by the bitmaps */
-	if (bitmap_a->pages[bitmap_a->npages-1] != bitmap_b->pages[bitmap_b->npages-1])
-	{
-		elog(WARNING, "bitmaps do not track the same number of pages (%d != %d)",
-			 bitmap_a->pages[bitmap_a->npages-1], bitmap_b->pages[bitmap_b->npages-1]);
-	}
+	Assert(bitmap_a->nbytes == bitmap_b->nbytes);
+	Assert(bitmap_a->npages == bitmap_b->npages);
 
 	/* the actual check, compares the bits one by one */
-	for (i = 0; i < bitmap_a->nbytes; i++)
+	ndiff = 0;
+	for (block = 0; block < bitmap_a->npages; block++)
 	{
-		diff = (bitmap_a->data[i] ^ bitmap_b->data[i]);
-
-		if (diff != 0)
+		for (offset = 0; offset < MaxHeapTuplesPerPage; offset++)
 		{
-			for (j = 0; j < 8; j++)
+			if (bitmap_get(bitmap_a, block, offset) != bitmap_get(bitmap_a, block, offset))
 			{
-				if (diff & (1 << j))
-					ndiff++;
+				elog(WARNING, "bitmap mismatch of [%u,%d]", block, offset);
+				ndiff++;
 			}
 		}
 	}
 
-	return ndiff;
+	return 0;
 }
 
 /* Prints the info about the bitmap and the data as a series of 0/1. */
@@ -394,7 +337,7 @@ bitmap_print(item_bitmap * bitmap, BitmapFormat format)
 
 /* count digits to print the array (in ASCII) */
 static int
-count_digits(int values[], int n)
+count_digits(uint64 values[], BlockNumber n)
 {
 	int i, digits = 0;
 	for (i = 0; i < n; i++)
